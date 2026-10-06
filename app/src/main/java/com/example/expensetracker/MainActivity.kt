@@ -14,9 +14,14 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,10 +34,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
@@ -52,7 +60,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Runtime Permissions check
         val permissions = mutableListOf(
             Manifest.permission.RECEIVE_SMS,
             Manifest.permission.READ_SMS
@@ -71,20 +78,19 @@ class MainActivity : ComponentActivity() {
         val db = AppDatabase.getDatabase(this)
         val dao = db.transactionDao()
 
-        // Sync from Firebase Firestore to local Room Database on app launch / reinstall
         lifecycleScope.launch(Dispatchers.IO) {
             FirebaseSync.syncFromCloud(dao)
         }
 
         setContent {
             MaterialTheme(
-                colorScheme = lightColorScheme(
-                    primary = Color(0xFF0F172A),
-                    secondary = Color(0xFF2563EB),
-                    surface = Color(0xFFF8FAFC)
+                colorScheme = darkColorScheme(
+                    primary = Color(0xFF10B981),
+                    background = Color(0xFF0B0F19),
+                    surface = Color(0xFF111827)
                 )
             ) {
-                ExpenseDashboardScreen(dao = dao, context = this)
+                FintechDashboardScreen(dao = dao, context = this)
             }
         }
     }
@@ -118,119 +124,150 @@ fun getAvailableMonths(): List<MonthItem> {
     return list
 }
 
+fun isWeekend(timestamp: Long): Boolean {
+    val cal = Calendar.getInstance().apply { timeInMillis = timestamp }
+    val day = cal.get(Calendar.DAY_OF_WEEK)
+    return day == Calendar.SATURDAY || day == Calendar.SUNDAY
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
+fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
     val coroutineScope = rememberCoroutineScope()
     val months = remember { getAvailableMonths() }
     var selectedMonthIndex by remember { mutableIntStateOf(0) }
     var monthMenuExpanded by remember { mutableStateOf(false) }
 
+    // Date Range Picker States
+    var isCustomRange by remember { mutableStateOf(false) }
+    var showRangePicker by remember { mutableStateOf(false) }
+    val dateRangePickerState = rememberDateRangePickerState()
+
     val currentMonth = months[selectedMonthIndex]
-    val transactions by dao.getTransactionsByDateRange(currentMonth.startMillis, currentMonth.endMillis)
+    var customStartMillis by remember { mutableLongStateOf(currentMonth.startMillis) }
+    var customEndMillis by remember { mutableLongStateOf(currentMonth.endMillis) }
+
+    val activeStartMillis = if (isCustomRange) customStartMillis else currentMonth.startMillis
+    val activeEndMillis = if (isCustomRange) customEndMillis else currentMonth.endMillis
+
+    val monthTransactions by dao.getTransactionsByDateRange(activeStartMillis, activeEndMillis)
         .collectAsState(initial = emptyList())
 
-    val allTransactions by dao.getAllTransactions().collectAsState(initial = emptyList())
+    // Filter Mode: COMMUTE (Mon-Fri), WEEKEND (Sat-Sun), ALL
+    var driverFilter by remember { mutableStateOf("COMMUTE") }
 
-    val totalDebit = transactions.filter { it.type == "DEBIT" }.sumOf { it.amount }
-    val totalCredit = transactions.filter { it.type == "CREDIT" }.sumOf { it.amount }
+    val totalDebit = monthTransactions.filter { it.type == "DEBIT" }.sumOf { it.amount }
+    val totalCredit = monthTransactions.filter { it.type == "CREDIT" }.sumOf { it.amount }
     val balance = totalCredit - totalDebit
 
-    val prefs = remember { context.getSharedPreferences("ExpensePrefs", Context.MODE_PRIVATE) }
-    var budgetLimit by remember { mutableFloatStateOf(prefs.getFloat("budget_limit", 15000f)) }
-
-    var showAddModal by remember { mutableStateOf(false) }
-    var defaultModalMode by remember { mutableStateOf("UBER") }
-    var editingItem by remember { mutableStateOf<Transaction?>(null) }
-    var deletingItem by remember { mutableStateOf<Transaction?>(null) }
-
-    // Driver Earnings Timeframe Filter: DAILY, WEEKLY, MONTHLY
-    var earningsTimeframe by remember { mutableStateOf("DAILY") }
-
-    val now = System.currentTimeMillis()
-
-    // Daily start (12:00 AM today)
-    val startOfDay = remember(now) {
-        val c = Calendar.getInstance()
-        c.set(Calendar.HOUR_OF_DAY, 0)
-        c.set(Calendar.MINUTE, 0)
-        c.set(Calendar.SECOND, 0)
-        c.set(Calendar.MILLISECOND, 0)
-        c.timeInMillis
-    }
-
-    // Weekly start (Start of current week)
-    val startOfWeek = remember(now) {
-        val c = Calendar.getInstance()
-        c.set(Calendar.DAY_OF_WEEK, c.firstDayOfWeek)
-        c.set(Calendar.HOUR_OF_DAY, 0)
-        c.set(Calendar.MINUTE, 0)
-        c.set(Calendar.SECOND, 0)
-        c.set(Calendar.MILLISECOND, 0)
-        c.timeInMillis
-    }
-
-    // Driver earnings (Uber / Rapido)
-    val driverEarningTxs = allTransactions.filter { (it.mode == "UBER" || it.mode == "RAPIDO") && it.type == "CREDIT" }
-
-    val filteredDriverTxs = when (earningsTimeframe) {
-        "DAILY" -> driverEarningTxs.filter { it.timestamp >= startOfDay }
-        "WEEKLY" -> driverEarningTxs.filter { it.timestamp >= startOfWeek }
-        else -> driverEarningTxs.filter { it.timestamp >= currentMonth.startMillis && it.timestamp <= currentMonth.endMillis }
+    val driverTxs = monthTransactions.filter { (it.mode == "UBER" || it.mode == "RAPIDO") && it.type == "CREDIT" }
+    val filteredDriverTxs = when (driverFilter) {
+        "COMMUTE" -> driverTxs.filter { !isWeekend(it.timestamp) }
+        "WEEKEND" -> driverTxs.filter { isWeekend(it.timestamp) }
+        else -> driverTxs
     }
 
     val uberTotal = filteredDriverTxs.filter { it.mode == "UBER" }.sumOf { it.amount }
     val rapidoTotal = filteredDriverTxs.filter { it.mode == "RAPIDO" }.sumOf { it.amount }
-    val driverTotal = uberTotal + rapidoTotal
+    val totalDriverEarn = uberTotal + rapidoTotal
+
+    val petrolSpent = monthTransactions.filter { it.category == "Petrol" && it.type == "DEBIT" }.sumOf { it.amount }
+    val netExtraIncome = totalDriverEarn - petrolSpent
+
+    var showAddModal by remember { mutableStateOf(false) }
+    var editingItem by remember { mutableStateOf<Transaction?>(null) }
+    var deletingItem by remember { mutableStateOf<Transaction?>(null) }
+
+    val activeDateLabel = if (isCustomRange) {
+        val sdf = SimpleDateFormat("dd MMM", Locale.getDefault())
+        "${sdf.format(Date(activeStartMillis))} - ${sdf.format(Date(activeEndMillis))}"
+    } else {
+        currentMonth.label
+    }
 
     Scaffold(
+        containerColor = Color(0xFF0B0F19),
         topBar = {
             TopAppBar(
                 title = {
                     Column {
-                        Text("Driver & Expense Tracker", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Text(currentMonth.label, fontSize = 12.sp, color = Color.Gray)
+                        Text("Finance & Side-Drive", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
+                        Text(activeDateLabel, fontSize = 12.sp, color = Color(0xFF94A3B8))
                     }
                 },
                 actions = {
-                    Box {
-                        IconButton(onClick = { monthMenuExpanded = true }) {
-                            Icon(Icons.Default.DateRange, contentDescription = "Select Month")
-                        }
-                        DropdownMenu(
-                            expanded = monthMenuExpanded,
-                            onDismissRequest = { monthMenuExpanded = false }
+                    // Custom Date Range Picker Button
+                    IconButton(onClick = { showRangePicker = true }) {
+                        Icon(Icons.Default.DateRange, contentDescription = "Custom Date Range", tint = Color(0xFF38BDF8))
+                    }
+
+                    // Month Selector Dropdown
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF1E293B),
+                        modifier = Modifier.clickable { monthMenuExpanded = true }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                         ) {
-                            months.forEachIndexed { index, item ->
-                                DropdownMenuItem(
-                                    text = { Text(item.label, fontWeight = if (index == selectedMonthIndex) FontWeight.Bold else FontWeight.Normal) },
-                                    onClick = {
-                                        selectedMonthIndex = index
-                                        monthMenuExpanded = false
-                                    }
-                                )
-                            }
+                            Text(
+                                text = if (isCustomRange) "Month" else currentMonth.label,
+                                fontSize = 12.sp,
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                     }
-                    IconButton(onClick = {
-                        exportPdf(context, currentMonth.label, transactions, totalCredit, totalDebit)
-                    }) {
-                        Icon(Icons.Default.Share, contentDescription = "Export PDF", tint = Color(0xFF0F172A))
+
+                    DropdownMenu(
+                        expanded = monthMenuExpanded,
+                        onDismissRequest = { monthMenuExpanded = false }
+                    ) {
+                        months.forEachIndexed { index, item ->
+                            DropdownMenuItem(
+                                text = { Text(item.label, fontWeight = if (!isCustomRange && index == selectedMonthIndex) FontWeight.Bold else FontWeight.Normal) },
+                                onClick = {
+                                    selectedMonthIndex = index
+                                    isCustomRange = false
+                                    monthMenuExpanded = false
+                                }
+                            )
+                        }
                     }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // PDF Export Button
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF1E293B),
+                        modifier = Modifier.clickable {
+                            exportPdf(context, activeDateLabel, monthTransactions, totalCredit, totalDebit)
+                        }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("PDF", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF0B0F19))
             )
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { 
-                    defaultModalMode = "UBER"
-                    showAddModal = true 
-                },
-                containerColor = Color(0xFF0F172A),
+                onClick = { showAddModal = true },
+                containerColor = Color(0xFF2563EB),
                 contentColor = Color.White,
+                shape = RoundedCornerShape(14.dp),
                 icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("Add Earning / Expense") }
+                text = { Text("+ Add Entry / Ride", fontWeight = FontWeight.Bold) }
             )
         }
     ) { padding ->
@@ -238,17 +275,17 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize()
-                .background(Color(0xFFF8FAFC)),
+                .background(Color(0xFF0B0F19)),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // DRIVER EARNINGS TRACKER CARD
+            // CARD 1: COMMUTE & WEEKEND EARNINGS
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
+                    border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF10B981)))
                 ) {
                     Column(modifier = Modifier.padding(18.dp)) {
                         Row(
@@ -256,80 +293,94 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFFFEF3C7)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFD97706), modifier = Modifier.size(20.dp))
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Driver Earnings", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            }
+                            Text("COMMUTE & WEEKEND EARNINGS", color = Color(0xFF10B981), fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
 
-                            // Timeframe Tabs (Daily / Weekly / Monthly)
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                listOf("DAILY" to "Day", "WEEKLY" to "Week", "MONTHLY" to "Month").forEach { (key, label) ->
-                                    FilterChip(
-                                        selected = earningsTimeframe == key,
-                                        onClick = { earningsTimeframe = key },
-                                        label = { Text(label, fontSize = 11.sp) },
-                                        modifier = Modifier.height(32.dp)
-                                    )
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF1E293B))
+                                    .padding(2.dp)
+                            ) {
+                                listOf("COMMUTE" to "Commute", "WEEKEND" to "Weekend", "ALL" to "All").forEach { (key, label) ->
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(if (driverFilter == key) Color(0xFF10B981) else Color.Transparent)
+                                            .clickable { driverFilter = key }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            label,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (driverFilter == key) Color.Black else Color(0xFF94A3B8)
+                                        )
+                                    }
                                 }
                             }
                         }
 
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        Text("Total Platform Earnings", fontSize = 12.sp, color = Color.Gray)
-                        Text(
-                            "₹${String.format("%,.0f", driverTotal)}",
-                            fontSize = 28.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFF1E293B)
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.Bottom
+                        ) {
+                            Column {
+                                Text("Platform Earning", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text(
+                                    "₹${String.format("%,.0f", totalDriverEarn)}",
+                                    fontSize = 28.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color.White
+                                )
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (netExtraIncome >= 0) Color(0x2210B981) else Color(0x22EF4444)
+                            ) {
+                                Text(
+                                    text = if (netExtraIncome >= 0) "Net: +₹${String.format("%,.0f", netExtraIncome)} (Petrol Free!)" else "Net: ₹${String.format("%,.0f", netExtraIncome)}",
+                                    color = if (netExtraIncome >= 0) Color(0xFF34D399) else Color(0xFFF87171),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        // Platform-wise Cards (Uber & Rapido)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            // Uber Card
-                            Card(
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFF030712))
+                                    .border(1.dp, Color(0xFF1F2937), RoundedCornerShape(12.dp))
+                                    .padding(12.dp)
                             ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text("UBER", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        "₹${String.format("%,.0f", uberTotal)}",
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White
-                                    )
+                                Column {
+                                    Text("UBER", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("₹${String.format("%,.0f", uberTotal)}", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
                                 }
                             }
 
-                            // Rapido Card
-                            Card(
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB))
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFF030712))
+                                    .border(1.dp, Color(0xFF1F2937), RoundedCornerShape(12.dp))
+                                    .padding(12.dp)
                             ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text("RAPIDO", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFB45309))
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        "₹${String.format("%,.0f", rapidoTotal)}",
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFD97706)
-                                    )
+                                Column {
+                                    Text("RAPIDO", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFBBF24))
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("₹${String.format("%,.0f", rapidoTotal)}", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFBBF24))
                                 }
                             }
                         }
@@ -337,64 +388,53 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
                 }
             }
 
-            // MONTH OVERALL BALANCE & EXPENSES
+            // CARD 2: CATEGORY DONUT EXPENSE CHART
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
+                    border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF1F2937)))
                 ) {
                     Column(modifier = Modifier.padding(18.dp)) {
-                        Text("Monthly Net Savings / Balance", color = Color(0xFF94A3B8), fontSize = 12.sp)
-                        Text(
-                            "₹${String.format("%,.2f", balance)}",
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
+                        Text("Where is money going? (Kharcha)", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFFF1F5F9))
+                        Spacer(modifier = Modifier.height(16.dp))
 
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        Row(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Total Income (All)", fontSize = 11.sp, color = Color(0xFFCBD5E1))
-                                Text("₹${String.format("%,.0f", totalCredit)}", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Total Kharcha (Debit)", fontSize = 11.sp, color = Color(0xFFCBD5E1))
-                                Text("₹${String.format("%,.0f", totalDebit)}", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFEF4444))
-                            }
+                        val expenseItems = monthTransactions.filter { it.type == "DEBIT" }
+                        if (expenseItems.isEmpty()) {
+                            Text("Is range me koi kharcha record nahi hua", color = Color(0xFF64748B), fontSize = 12.sp)
+                        } else {
+                            CategoryDonutSection(expenses = expenseItems)
                         }
                     }
                 }
             }
 
-            // TRANSACTIONS HISTORY
+            // TRANSACTIONS LIST HEADER
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("All Entries (${transactions.size})", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text("Transactions (${monthTransactions.size})", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color.White)
                 }
             }
 
-            if (transactions.isEmpty()) {
+            if (monthTransactions.isEmpty()) {
                 item {
-                    Box(modifier = Modifier.fillMaxWidth().padding(30.dp), contentAlignment = Alignment.Center) {
-                        Text("Is mahine koi record nahi mila", color = Color.Gray, fontSize = 14.sp)
+                    Box(modifier = Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
+                        Text("Koi record nahi mila", color = Color(0xFF64748B), fontSize = 13.sp)
                     }
                 }
             } else {
                 val sdf = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault())
-                items(transactions, key = { it.id }) { item ->
+                items(monthTransactions, key = { it.id }) { item ->
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.White),
-                        elevation = CardDefaults.cardElevation(1.dp)
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(14.dp),
@@ -402,48 +442,48 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                val iconBg = when (item.mode) {
-                                    "UBER" -> Color(0xFF0F172A)
-                                    "RAPIDO" -> Color(0xFFF59E0B)
-                                    "ONLINE" -> Color(0xFF3B82F6)
-                                    else -> Color(0xFF10B981)
+                                val iconColor = when (item.category) {
+                                    "Petrol" -> Color(0xFFEF4444)
+                                    "Food" -> Color(0xFFF59E0B)
+                                    "Bills" -> Color(0xFF38BDF8)
+                                    "Maintenance" -> Color(0xFFA78BFA)
+                                    "Rides" -> Color(0xFF10B981)
+                                    else -> Color(0xFF94A3B8)
                                 }
 
                                 Box(
-                                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(iconBg),
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFF0F172A)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
-                                        imageVector = when (item.mode) {
-                                            "UBER", "RAPIDO" -> Icons.Default.Place
-                                            "ONLINE" -> Icons.Default.Email
-                                            else -> Icons.Default.ShoppingCart
+                                        imageVector = when (item.category) {
+                                            "Petrol" -> Icons.Default.Place
+                                            "Food" -> Icons.Default.ShoppingCart
+                                            "Bills" -> Icons.Default.Email
+                                            "Maintenance" -> Icons.Default.Build
+                                            "Rides" -> Icons.Default.Star
+                                            else -> Icons.Default.Info
                                         },
                                         contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
+                                        tint = iconColor,
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
 
                                 Spacer(modifier = Modifier.width(12.dp))
 
                                 Column {
-                                    Text(item.description, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1)
+                                    Text(item.description, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White, maxLines = 1)
+                                    Spacer(modifier = Modifier.height(2.dp))
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = Color(0xFFF1F5F9)
-                                        ) {
-                                            Text(
-                                                item.mode,
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF475569),
-                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(sdf.format(Date(item.timestamp)), fontSize = 11.sp, color = Color.Gray)
+                                        Text(item.mode, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF38BDF8))
+                                        Text(" • ", fontSize = 10.sp, color = Color(0xFF64748B))
+                                        Text(item.category, fontSize = 10.sp, color = Color(0xFFCBD5E1))
+                                        Text(" • ", fontSize = 10.sp, color = Color(0xFF64748B))
+                                        Text(sdf.format(Date(item.timestamp)), fontSize = 10.sp, color = Color(0xFF64748B))
                                     }
                                 }
                             }
@@ -451,16 +491,16 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     text = (if (item.type == "CREDIT") "+ " else "- ") + "₹${String.format("%,.0f", item.amount)}",
-                                    fontWeight = FontWeight.Bold,
+                                    fontWeight = FontWeight.ExtraBold,
                                     fontSize = 15.sp,
-                                    color = if (item.type == "CREDIT") Color(0xFF16A34A) else Color(0xFFDC2626)
+                                    color = if (item.type == "CREDIT") Color(0xFF10B981) else Color(0xFFEF4444)
                                 )
 
                                 IconButton(onClick = { editingItem = item }, modifier = Modifier.size(28.dp)) {
-                                    Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color.Gray, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color(0xFF64748B), modifier = Modifier.size(15.dp))
                                 }
                                 IconButton(onClick = { deletingItem = item }, modifier = Modifier.size(28.dp)) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFEF4444), modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFEF4444), modifier = Modifier.size(15.dp))
                                 }
                             }
                         }
@@ -470,175 +510,375 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
         }
     }
 
-    // Modal: Add Entry (Supports UBER, RAPIDO, CASH, ONLINE + Firebase Sync)
+    // Custom Date Range Picker Dialog
+    if (showRangePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showRangePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    val start = dateRangePickerState.selectedStartDateMillis
+                    val end = dateRangePickerState.selectedEndDateMillis
+                    if (start != null && end != null) {
+                        customStartMillis = start
+                        val cal = Calendar.getInstance().apply {
+                            timeInMillis = end
+                            set(Calendar.HOUR_OF_DAY, 23)
+                            set(Calendar.MINUTE, 59)
+                            set(Calendar.SECOND, 59)
+                            set(Calendar.MILLISECOND, 999)
+                        }
+                        customEndMillis = cal.timeInMillis
+                        isCustomRange = true
+                    }
+                    showRangePicker = false
+                }) { Text("Apply", color = Color(0xFF10B981), fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRangePicker = false }) { Text("Cancel", color = Color.Gray) }
+            }
+        ) {
+            DateRangePicker(
+                state = dateRangePickerState,
+                title = { Text("Select Date Range", modifier = Modifier.padding(16.dp), color = Color.White) },
+                showModeToggle = false
+            )
+        }
+    }
+
+    // Modal: 1-Tap Fast Entry Dialog
     if (showAddModal) {
-        DriverEntryDialog(
-            title = "Add Earning / Expense",
-            initialMode = defaultModalMode,
+        ModernFastEntryDialog(
+            title = "New Transaction",
             onDismiss = { showAddModal = false },
-            onSave = { amount, desc, type, mode ->
+            onSave = { amount, desc, type, mode, category ->
                 coroutineScope.launch {
                     val newTx = Transaction(
                         amount = amount,
                         type = type,
                         mode = mode,
+                        category = category,
                         description = desc
                     )
-                    // 1. Local Room SQLite Database me save
                     dao.insertTransaction(newTx)
-                    // 2. Firebase Cloud Firestore me sync
                     FirebaseSync.saveToFirebase(newTx)
-
                     showAddModal = false
                 }
             }
         )
     }
 
-    // Modal: Edit Entry + Firebase Sync
+    // Modal: Edit
     editingItem?.let { tx ->
-        DriverEntryDialog(
+        ModernFastEntryDialog(
             title = "Edit Entry",
             initialAmount = tx.amount.toString(),
             initialDesc = tx.description,
             initialType = tx.type,
             initialMode = tx.mode,
+            initialCategory = tx.category,
             onDismiss = { editingItem = null },
-            onSave = { amount, desc, type, mode ->
+            onSave = { amount, desc, type, mode, category ->
                 coroutineScope.launch {
                     val updatedTx = tx.copy(
                         amount = amount,
                         description = desc,
                         type = type,
-                        mode = mode
+                        mode = mode,
+                        category = category
                     )
-                    // 1. Local Room DB update
                     dao.updateTransaction(updatedTx)
-                    // 2. Firebase Cloud update
                     FirebaseSync.saveToFirebase(updatedTx)
-
                     editingItem = null
                 }
             }
         )
     }
 
-    // Modal: Delete Confirm + Firebase Sync
+    // Modal: Delete Confirm
     deletingItem?.let { tx ->
         AlertDialog(
+            containerColor = Color(0xFF111827),
+            titleContentColor = Color.White,
+            textContentColor = Color(0xFF94A3B8),
             onDismissRequest = { deletingItem = null },
             title = { Text("Delete Entry") },
-            text = { Text("Kya aap ₹${tx.amount} ki entry delete karna chahte hain?") },
+            text = { Text("₹${tx.amount} ki entry delete karni hai?") },
             confirmButton = {
                 Button(
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
                     onClick = {
                         coroutineScope.launch {
-                            // 1. Local DB se delete
                             dao.deleteTransaction(tx)
-                            // 2. Firebase Cloud se delete
                             FirebaseSync.deleteFromFirebase(tx.timestamp)
-
                             deletingItem = null
                         }
                     }
-                ) { Text("Delete") }
+                ) { Text("Delete", color = Color.White) }
             },
-            dismissButton = { TextButton(onClick = { deletingItem = null }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { deletingItem = null }) { Text("Cancel", color = Color.Gray) } }
         )
+    }
+}
+
+@Composable
+fun CategoryDonutSection(expenses: List<Transaction>) {
+    val totalExpense = expenses.sumOf { it.amount }.toFloat().coerceAtLeast(1f)
+    val grouped = expenses.groupBy { it.category }
+        .mapValues { it.value.sumOf { tx -> tx.amount }.toFloat() }
+        .toList()
+        .sortedByDescending { it.second }
+
+    val categoryColors = mapOf(
+        "Petrol" to Color(0xFFEF4444),
+        "Food" to Color(0xFFF59E0B),
+        "Bills" to Color(0xFF38BDF8),
+        "Maintenance" to Color(0xFFA78BFA),
+        "Rides" to Color(0xFF10B981),
+        "Other" to Color(0xFF64748B)
+    )
+
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.size(100.dp), contentAlignment = Alignment.Center) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                var startAngle = -90f
+                grouped.forEach { (cat, amt) ->
+                    val sweep = (amt / totalExpense) * 360f
+                    val col = categoryColors[cat] ?: Color(0xFF64748B)
+                    drawArc(
+                        color = col,
+                        startAngle = startAngle,
+                        sweepAngle = sweep,
+                        useCenter = false,
+                        style = Stroke(width = 16f, cap = StrokeCap.Round)
+                    )
+                    startAngle += sweep
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.width(20.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            grouped.take(4).forEach { (cat, amt) ->
+                val pct = ((amt / totalExpense) * 100).toInt()
+                val col = categoryColors[cat] ?: Color(0xFF64748B)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(col))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("$cat: ₹${amt.toInt()} ($pct%)", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                }
+            }
+        }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DriverEntryDialog(
+fun ModernFastEntryDialog(
     title: String,
     initialAmount: String = "",
     initialDesc: String = "",
     initialType: String = "CREDIT",
     initialMode: String = "UBER",
+    initialCategory: String = "Rides",
     onDismiss: () -> Unit,
-    onSave: (amount: Double, desc: String, type: String, mode: String) -> Unit
+    onSave: (amount: Double, desc: String, type: String, mode: String, category: String) -> Unit
 ) {
     var amount by remember { mutableStateOf(initialAmount) }
     var desc by remember { mutableStateOf(initialDesc) }
     var type by remember { mutableStateOf(initialType) }
     var mode by remember { mutableStateOf(initialMode) }
+    var category by remember { mutableStateOf(initialCategory) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // Type Select (Earning vs Kharcha)
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = type == "CREDIT",
-                        onClick = { type = "CREDIT" },
-                        label = { Text("Earning (Kamai)") },
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilterChip(
-                        selected = type == "DEBIT",
-                        onClick = { type = "DEBIT" },
-                        label = { Text("Expense (Kharcha)") },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF111827),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(title, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
+                Text("Fast 1-tap entry for rides & expenses", fontSize = 11.sp, color = Color(0xFF94A3B8))
 
-                // Platform / Mode Selection
-                Text("Platform / Category:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.Gray)
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("UBER", "RAPIDO", "CASH", "ONLINE").forEach { m ->
-                        FilterChip(
-                            selected = mode == m,
-                            onClick = { 
-                                mode = m
-                                if (desc.isBlank()) {
-                                    desc = if (m == "UBER") "Uber Rides" else if (m == "RAPIDO") "Rapido Rides" else ""
-                                }
-                            },
-                            label = { Text(m, fontSize = 11.sp) }
-                        )
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF030712))
+                        .padding(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (type == "CREDIT") Color(0xFF10B981) else Color.Transparent)
+                            .clickable {
+                                type = "CREDIT"
+                                category = "Rides"
+                            }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Earning / Ride (+)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (type == "CREDIT") Color.Black else Color(0xFF94A3B8))
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (type == "DEBIT") Color(0xFFEF4444) else Color.Transparent)
+                            .clickable {
+                                type = "DEBIT"
+                                category = "Petrol"
+                            }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Expense (-)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (type == "DEBIT") Color.White else Color(0xFF94A3B8))
                     }
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text("PLATFORM / MODE", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF64748B))
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("UBER", "RAPIDO", "CASH", "ONLINE").forEach { m ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (mode == m) Color(0xFF1E293B) else Color(0xFF0F172A))
+                                .border(1.dp, if (mode == m) Color(0xFF38BDF8) else Color(0xFF1F2937), RoundedCornerShape(8.dp))
+                            .clickable {
+                                mode = m
+                                if (desc.isBlank()) {
+                                    desc = if (m == "UBER") "Uber Ride" else if (m == "RAPIDO") "Rapido Ride" else ""
+                                }
+                            }
+                            .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(m, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (mode == m) Color(0xFF38BDF8) else Color(0xFF94A3B8))
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text("QUICK SHORTCUTS", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF64748B))
+                Spacer(modifier = Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val shortcuts = if (type == "CREDIT") listOf(50 to "Ride", 80 to "Ride", 120 to "Ride", 180 to "Ride")
+                    else listOf(100 to "Petrol", 200 to "Petrol", 20 to "Chai", 500 to "Fuel")
+
+                    items(shortcuts) { (amtVal, label) ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF1E293B),
+                            modifier = Modifier.clickable {
+                                amount = amtVal.toString()
+                                if (label == "Petrol" || label == "Fuel") category = "Petrol"
+                                if (label == "Chai") category = "Food"
+                                desc = "$label ₹$amtVal"
+                            }
+                        ) {
+                            Text("+ ₹$amtVal $label", fontSize = 11.sp, color = Color.White, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp))
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
 
                 OutlinedTextField(
                     value = amount,
                     onValueChange = { amount = it },
-                    label = { Text("Amount (₹)") },
+                    label = { Text("Amount (₹)", color = Color(0xFF94A3B8)) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = Color(0xFF38BDF8),
+                        unfocusedBorderColor = Color(0xFF334155)
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text("CATEGORY", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF64748B))
+                Spacer(modifier = Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val cats = listOf("Rides", "Petrol", "Food", "Bills", "Maintenance", "Other")
+                    items(cats) { c ->
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (category == c) Color(0xFF2563EB) else Color(0xFF1E293B))
+                                .clickable { category = c }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(c, fontSize = 11.sp, color = if (category == c) Color.White else Color(0xFF94A3B8), fontWeight = FontWeight.Medium)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
 
                 OutlinedTextField(
                     value = desc,
                     onValueChange = { desc = it },
-                    label = { Text("Description / Note") },
-                    placeholder = { Text("e.g. 10 rides, Petrol, etc.") },
+                    label = { Text("Note / Description", color = Color(0xFF94A3B8)) },
+                    placeholder = { Text("e.g. Office to Home, Tea, etc.", color = Color(0xFF64748B)) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = Color(0xFF38BDF8),
+                        unfocusedBorderColor = Color(0xFF334155)
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 )
-            }
-        },
-        confirmButton = {
-            Button(
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A)),
-                onClick = {
-                    val amt = amount.toDoubleOrNull()
-                    if (amt != null && amt > 0) {
-                        onSave(amt, desc.ifBlank { if (type == "CREDIT") "$mode Earning" else "Expense" }, type, mode)
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = if (type == "CREDIT") Color(0xFF10B981) else Color(0xFFEF4444)),
+                    onClick = {
+                        val amt = amount.toDoubleOrNull()
+                        if (amt != null && amt > 0) {
+                            onSave(amt, desc.ifBlank { if (type == "CREDIT") "$mode Earning" else category }, type, mode, category)
+                        }
                     }
+                ) {
+                    Text(
+                        text = if (type == "CREDIT") "Save Earning (₹${amount.ifBlank { "0" }})" else "Save Expense (₹${amount.ifBlank { "0" }})",
+                        color = if (type == "CREDIT") Color.Black else Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
-            ) { Text("Save Entry") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                TextButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onDismiss
+                ) {
+                    Text("Cancel", color = Color(0xFF94A3B8))
+                }
+            }
+        }
+    }
 }
 
 fun exportPdf(
     context: Context,
-    monthLabel: String,
+    dateRangeLabel: String,
     transactions: List<Transaction>,
     totalCredit: Double,
     totalDebit: Double
@@ -652,7 +892,7 @@ fun exportPdf(
     paint.textSize = 20f
     paint.isFakeBoldText = true
     paint.color = android.graphics.Color.BLACK
-    canvas.drawText("Driver & Expense Statement - $monthLabel", 40f, 50f, paint)
+    canvas.drawText("Fintech & Driver Statement - $dateRangeLabel", 40f, 50f, paint)
 
     paint.textSize = 12f
     paint.isFakeBoldText = false
@@ -666,7 +906,7 @@ fun exportPdf(
     paint.color = android.graphics.Color.BLACK
     paint.textSize = 13f
     paint.isFakeBoldText = true
-    canvas.drawText("Total Income: Rs. $totalCredit", 40f, 110f, paint)
+    canvas.drawText("Total Credit: Rs. $totalCredit", 40f, 110f, paint)
     canvas.drawText("Total Debit: Rs. $totalDebit", 220f, 110f, paint)
     canvas.drawText("Net: Rs. ${totalCredit - totalDebit}", 400f, 110f, paint)
 
@@ -675,10 +915,10 @@ fun exportPdf(
     var y = 160f
     paint.isFakeBoldText = true
     canvas.drawText("Date", 40f, y, paint)
-    canvas.drawText("Description", 150f, y, paint)
-    canvas.drawText("Platform", 350f, y, paint)
-    canvas.drawText("Type", 430f, y, paint)
-    canvas.drawText("Amount", 500f, y, paint)
+    canvas.drawText("Description", 140f, y, paint)
+    canvas.drawText("Category", 310f, y, paint)
+    canvas.drawText("Mode", 410f, y, paint)
+    canvas.drawText("Amount", 490f, y, paint)
 
     paint.isFakeBoldText = false
     val sdf = SimpleDateFormat("dd/MM/yy", Locale.getDefault())
@@ -688,17 +928,17 @@ fun exportPdf(
         if (y > 800f) break
 
         canvas.drawText(sdf.format(Date(tx.timestamp)), 40f, y, paint)
-        val shortDesc = if (tx.description.length > 22) tx.description.take(22) + ".." else tx.description
-        canvas.drawText(shortDesc, 150f, y, paint)
-        canvas.drawText(tx.mode, 350f, y, paint)
-        canvas.drawText(tx.type, 430f, y, paint)
-        canvas.drawText("Rs. ${tx.amount}", 500f, y, paint)
+        val shortDesc = if (tx.description.length > 20) tx.description.take(20) + ".." else tx.description
+        canvas.drawText(shortDesc, 140f, y, paint)
+        canvas.drawText(tx.category, 310f, y, paint)
+        canvas.drawText(tx.mode, 410f, y, paint)
+        canvas.drawText("Rs. ${tx.amount}", 490f, y, paint)
     }
 
     pdfDocument.finishPage(page)
 
     val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-    val file = File(dir, "Driver_Statement_${monthLabel.replace(" ", "_")}.pdf")
+    val file = File(dir, "Statement_${dateRangeLabel.replace(" ", "_").replace("-", "_")}.pdf")
 
     try {
         pdfDocument.writeTo(FileOutputStream(file))
