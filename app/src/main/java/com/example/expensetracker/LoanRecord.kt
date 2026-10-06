@@ -8,13 +8,13 @@ data class LoanRecord(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val personName: String,
-    val amount: Double,               // Mool-dhan / Current Remaining Balance
-    val originalAmount: Double,       // Starting amount (e.g. ₹5,000)
-    val type: String,                 // "TAKEN" (Maine Liye) ya "GIVEN" (Maine Diye)
-    val hasInterest: Boolean = false, // Byaaj switch
-    val monthlyRate: Double = 0.0,    // Monthly % rate (e.g. 2.0%)
+    val amount: Double,
+    val originalAmount: Double,
+    val type: String,
+    val hasInterest: Boolean = false,
+    val monthlyRate: Double = 0.0,
     val startDate: Long = System.currentTimeMillis(),
-    val isSettled: Boolean = false,   // Pura hisaab khatam hua ya nahi
+    val isSettled: Boolean = false,
     val note: String = ""
 )
 
@@ -23,9 +23,9 @@ data class InterestPayment(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val loanId: Long,
-    val amount: Double,               // Paid amount
-    val paymentType: String,          // "INTEREST" (Sirf Byaaj) ya "PRINCIPAL" (Mool-dhan wapsi)
-    val paymentMode: String = "ONLINE", // "ONLINE" ya "CASH"
+    val amount: Double,
+    val paymentType: String,
+    val paymentMode: String = "ONLINE",
     val paymentDate: Long = System.currentTimeMillis(),
     val note: String = ""
 )
