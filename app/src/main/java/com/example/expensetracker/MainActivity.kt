@@ -79,8 +79,9 @@ class MainActivity : ComponentActivity() {
         val transactionDao = db.transactionDao()
         val loanDao = db.loanDao()
 
+        // 3-Way Cloud Sync from Firebase on App Start
         lifecycleScope.launch(Dispatchers.IO) {
-            FirebaseSync.syncFromCloud(transactionDao)
+            FirebaseSync.syncFromCloud(transactionDao, loanDao)
         }
 
         setContent {
@@ -101,7 +102,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ---------------- SIDE DRAWER & ROOT NAVIGATION ----------------
+// ---------------- SIDE DRAWER NAVIGATION ----------------
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainAppWithDrawer(
@@ -124,7 +125,7 @@ fun MainAppWithDrawer(
                 Spacer(modifier = Modifier.height(24.dp))
                 Column(modifier = Modifier.padding(horizontal = 20.dp)) {
                     Text("Finance & Drive", fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = Color.White)
-                    Text("Daily Expenses & Credit Book", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                    Text("Daily Expenses & Khata Book", fontSize = 12.sp, color = Color(0xFF94A3B8))
                 }
                 Spacer(modifier = Modifier.height(24.dp))
                 Divider(color = Color(0xFF1F2937))
@@ -184,7 +185,7 @@ fun MainAppWithDrawer(
     }
 }
 
-// ---------------- LOAN & INTEREST BOOK SCREEN ----------------
+// ---------------- UDHAAR & BYAAJ KHATA SCREEN ----------------
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UdhaarKhataScreen(
@@ -241,9 +242,9 @@ fun UdhaarKhataScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // TOP 2 SUMMARY CARDS
             item {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // Borrowed Card
                     Card(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(18.dp),
@@ -251,7 +252,7 @@ fun UdhaarKhataScreen(
                         border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFFEF4444)))
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
-                            Text("BORROWED (TO PAY)", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFFF87171))
+                            Text("BORROWED (DEBT)", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFFF87171))
                             Spacer(modifier = Modifier.height(4.dp))
                             Text("₹${String.format("%,.0f", totalBorrowed)}", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
                             Spacer(modifier = Modifier.height(4.dp))
@@ -259,7 +260,6 @@ fun UdhaarKhataScreen(
                         }
                     }
 
-                    // Lent Card
                     Card(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(18.dp),
@@ -267,7 +267,7 @@ fun UdhaarKhataScreen(
                         border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF10B981)))
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
-                            Text("LENT (TO RECEIVE)", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF34D399))
+                            Text("LENT (CREDIT)", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF34D399))
                             Spacer(modifier = Modifier.height(4.dp))
                             Text("₹${String.format("%,.0f", totalLent)}", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
                             Spacer(modifier = Modifier.height(4.dp))
@@ -284,7 +284,7 @@ fun UdhaarKhataScreen(
             if (loans.isEmpty()) {
                 item {
                     Box(modifier = Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
-                        Text("No active loan or credit records found", color = Color(0xFF64748B), fontSize = 13.sp)
+                        Text("No active loan records found", color = Color(0xFF64748B), fontSize = 13.sp)
                     }
                 }
             } else {
@@ -365,7 +365,7 @@ fun UdhaarKhataScreen(
                                         }
                                         Spacer(modifier = Modifier.height(2.dp))
                                         Text(
-                                            "₹${currentMonthlyInterest.toInt()} monthly interest on remaining ₹${loan.amount.toInt()}",
+                                            "₹${currentMonthlyInterest.toInt()} monthly interest on remaining ₹${loan.amount.toInt()} balance",
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFFFBBF24)
@@ -435,18 +435,18 @@ fun UdhaarKhataScreen(
             onDismiss = { showAddLoanModal = false },
             onSave = { name, amount, type, hasInt, rate, date, note ->
                 coroutineScope.launch {
-                    loanDao.insertLoan(
-                        LoanRecord(
-                            personName = name,
-                            amount = amount,
-                            originalAmount = amount,
-                            type = type,
-                            hasInterest = hasInt,
-                            monthlyRate = rate,
-                            startDate = date,
-                            note = note
-                        )
+                    val newLoan = LoanRecord(
+                        personName = name,
+                        amount = amount,
+                        originalAmount = amount,
+                        type = type,
+                        hasInterest = hasInt,
+                        monthlyRate = rate,
+                        startDate = date,
+                        note = note
                     )
+                    val id = loanDao.insertLoan(newLoan)
+                    FirebaseSync.saveLoanToFirebase(newLoan.copy(id = id))
                     showAddLoanModal = false
                 }
             }
@@ -465,21 +465,23 @@ fun UdhaarKhataScreen(
             onDismiss = { activeLoanForPayment = null },
             onConfirm = { amountPaid, mode, payDate, note ->
                 coroutineScope.launch {
-                    loanDao.insertInterestPayment(
-                        InterestPayment(
-                            loanId = loan.id,
-                            amount = amountPaid,
-                            paymentType = paymentActionType,
-                            paymentMode = mode,
-                            paymentDate = payDate,
-                            note = note
-                        )
+                    val payment = InterestPayment(
+                        loanId = loan.id,
+                        amount = amountPaid,
+                        paymentType = paymentActionType,
+                        paymentMode = mode,
+                        paymentDate = payDate,
+                        note = note
                     )
+                    loanDao.insertInterestPayment(payment)
+                    FirebaseSync.savePaymentToFirebase(payment)
 
                     if (paymentActionType == "PRINCIPAL") {
                         val newBalance = (loan.amount - amountPaid).coerceAtLeast(0.0)
                         val isFullyPaid = newBalance <= 0.0
-                        loanDao.updateLoan(loan.copy(amount = newBalance, isSettled = isFullyPaid))
+                        val updatedLoan = loan.copy(amount = newBalance, isSettled = isFullyPaid)
+                        loanDao.updateLoan(updatedLoan)
+                        FirebaseSync.saveLoanToFirebase(updatedLoan)
                     }
 
                     val tx = Transaction(
@@ -514,13 +516,15 @@ fun UdhaarKhataScreen(
             textContentColor = Color(0xFF94A3B8),
             onDismissRequest = { loanToSettle = null },
             title = { Text("Complete Settlement?") },
-            text = { Text("Has the full balance of ₹${loan.amount} for ${loan.personName} been settled?") },
+            text = { Text("Has the remaining ₹${loan.amount} for ${loan.personName} been settled?") },
             confirmButton = {
                 Button(
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
                     onClick = {
                         coroutineScope.launch {
-                            loanDao.updateLoan(loan.copy(amount = 0.0, isSettled = true))
+                            val settledLoan = loan.copy(amount = 0.0, isSettled = true)
+                            loanDao.updateLoan(settledLoan)
+                            FirebaseSync.saveLoanToFirebase(settledLoan)
                             loanToSettle = null
                         }
                     }
@@ -531,7 +535,7 @@ fun UdhaarKhataScreen(
     }
 }
 
-// ---------------- DIALOG: RECORD PAYMENT ----------------
+// ---------------- DIALOG: RECORD PAYMENT (ONLINE / CASH) ----------------
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordPaymentDialog(
@@ -632,7 +636,7 @@ fun RecordPaymentDialog(
                 OutlinedTextField(
                     value = note,
                     onValueChange = { note = it },
-                    label = { Text("Note (Optional, e.g. UPI Ref / Details)", color = Color(0xFF94A3B8)) },
+                    label = { Text("Note (Optional, e.g. PhonePe Ref)", color = Color(0xFF94A3B8)) },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
@@ -684,7 +688,7 @@ fun RecordPaymentDialog(
     }
 }
 
-// ---------------- DIALOG: ADD NEW LOAN ----------------
+// ---------------- DIALOG: ADD NEW RECORD ----------------
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddNewLoanDialog(
@@ -753,7 +757,7 @@ fun AddNewLoanDialog(
                 OutlinedTextField(
                     value = personName,
                     onValueChange = { personName = it },
-                    label = { Text("Person Name (e.g. John, Raj)", color = Color(0xFF94A3B8)) },
+                    label = { Text("Person Name (e.g. Raj, John)", color = Color(0xFF94A3B8)) },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
@@ -1060,7 +1064,7 @@ fun FintechDashboardScreen(
                 },
                 title = {
                     Column {
-                        Text("Finance & Side-Drive", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
+                        Text("Finance", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
                         Text(activeDateLabel, fontSize = 12.sp, color = Color(0xFF94A3B8))
                     }
                 },
@@ -1145,6 +1149,7 @@ fun FintechDashboardScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // DRIVER COMMUTE & WEEKEND CARD
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -1253,6 +1258,7 @@ fun FintechDashboardScreen(
                 }
             }
 
+            // DONUT CHART
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -1274,6 +1280,7 @@ fun FintechDashboardScreen(
                 }
             }
 
+            // TRANSACTIONS HEADING
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
