@@ -76,10 +76,11 @@ class MainActivity : ComponentActivity() {
         }
 
         val db = AppDatabase.getDatabase(this)
-        val dao = db.transactionDao()
+        val transactionDao = db.transactionDao()
+        val loanDao = db.loanDao()
 
         lifecycleScope.launch(Dispatchers.IO) {
-            FirebaseSync.syncFromCloud(dao)
+            FirebaseSync.syncFromCloud(transactionDao)
         }
 
         setContent {
@@ -90,12 +91,874 @@ class MainActivity : ComponentActivity() {
                     surface = Color(0xFF111827)
                 )
             ) {
-                FintechDashboardScreen(dao = dao, context = this)
+                MainAppWithDrawer(
+                    transactionDao = transactionDao,
+                    loanDao = loanDao,
+                    context = this
+                )
             }
         }
     }
 }
 
+// ---------------- SIDE DRAWER & ROOT NAVIGATION ----------------
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MainAppWithDrawer(
+    transactionDao: TransactionDao,
+    loanDao: LoanDao,
+    context: Context
+) {
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val coroutineScope = rememberCoroutineScope()
+    var currentScreen by remember { mutableStateOf("EXPENSES") } // "EXPENSES" or "KHATA"
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(
+                drawerContainerColor = Color(0xFF111827),
+                drawerContentColor = Color.White,
+                modifier = Modifier.width(300.dp)
+            ) {
+                Spacer(modifier = Modifier.height(24.dp))
+                Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+                    Text("Finance & Drive", fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = Color.White)
+                    Text("Daily Expenses & Credit Book", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                }
+                Spacer(modifier = Modifier.height(24.dp))
+                Divider(color = Color(0xFF1F2937))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                NavigationDrawerItem(
+                    label = { Text("Daily Expense & Driver", fontWeight = FontWeight.Bold) },
+                    selected = currentScreen == "EXPENSES",
+                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                    colors = NavigationDrawerItemDefaults.colors(
+                        selectedContainerColor = Color(0xFF1E293B),
+                        selectedTextColor = Color(0xFF38BDF8),
+                        selectedIconColor = Color(0xFF38BDF8),
+                        unselectedTextColor = Color(0xFF94A3B8),
+                        unselectedIconColor = Color(0xFF94A3B8)
+                    ),
+                    onClick = {
+                        currentScreen = "EXPENSES"
+                        coroutineScope.launch { drawerState.close() }
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                )
+
+                NavigationDrawerItem(
+                    label = { Text("Loan & Interest Book", fontWeight = FontWeight.Bold) },
+                    selected = currentScreen == "KHATA",
+                    icon = { Icon(Icons.Default.AccountBox, contentDescription = null) },
+                    colors = NavigationDrawerItemDefaults.colors(
+                        selectedContainerColor = Color(0xFF1E293B),
+                        selectedTextColor = Color(0xFF10B981),
+                        selectedIconColor = Color(0xFF10B981),
+                        unselectedTextColor = Color(0xFF94A3B8),
+                        unselectedIconColor = Color(0xFF94A3B8)
+                    ),
+                    onClick = {
+                        currentScreen = "KHATA"
+                        coroutineScope.launch { drawerState.close() }
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                )
+            }
+        }
+    ) {
+        if (currentScreen == "EXPENSES") {
+            FintechDashboardScreen(
+                dao = transactionDao,
+                context = context,
+                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+            )
+        } else {
+            UdhaarKhataScreen(
+                loanDao = loanDao,
+                transactionDao = transactionDao,
+                onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+            )
+        }
+    }
+}
+
+// ---------------- LOAN & INTEREST BOOK SCREEN ----------------
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun UdhaarKhataScreen(
+    loanDao: LoanDao,
+    transactionDao: TransactionDao,
+    onOpenDrawer: () -> Unit
+) {
+    val coroutineScope = rememberCoroutineScope()
+    val loans by loanDao.getAllLoans().collectAsState(initial = emptyList())
+
+    val totalBorrowed = loans.filter { it.type == "TAKEN" && !it.isSettled }.sumOf { it.amount }
+    val totalLent = loans.filter { it.type == "GIVEN" && !it.isSettled }.sumOf { it.amount }
+
+    var showAddLoanModal by remember { mutableStateOf(false) }
+    var selectedLoanForPassbook by remember { mutableStateOf<LoanRecord?>(null) }
+    var activeLoanForPayment by remember { mutableStateOf<LoanRecord?>(null) }
+    var paymentActionType by remember { mutableStateOf("INTEREST") } // "INTEREST" or "PRINCIPAL"
+    var loanToSettle by remember { mutableStateOf<LoanRecord?>(null) }
+
+    Scaffold(
+        containerColor = Color(0xFF0B0F19),
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Default.Menu, contentDescription = "Menu", tint = Color(0xFF38BDF8))
+                    }
+                },
+                title = {
+                    Column {
+                        Text("Loan & Interest Book", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
+                        Text("Lend, Borrow & Interest Tracker", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF0B0F19))
+            )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { showAddLoanModal = true },
+                containerColor = Color(0xFF2563EB),
+                contentColor = Color.White,
+                shape = RoundedCornerShape(14.dp),
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text("+ Add New Record", fontWeight = FontWeight.Bold) }
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .background(Color(0xFF0B0F19)),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            item {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // Borrowed Card
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
+                        border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFFEF4444)))
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text("BORROWED (TO PAY)", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFFF87171))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("₹${String.format("%,.0f", totalBorrowed)}", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("${loans.count { it.type == "TAKEN" && !it.isSettled }} Active", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                        }
+                    }
+
+                    // Lent Card
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
+                        border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF10B981)))
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text("LENT (TO RECEIVE)", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF34D399))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("₹${String.format("%,.0f", totalLent)}", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("${loans.count { it.type == "GIVEN" && !it.isSettled }} Active", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text("Active Accounts & Details", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color.White)
+            }
+
+            if (loans.isEmpty()) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
+                        Text("No active loan or credit records found", color = Color(0xFF64748B), fontSize = 13.sp)
+                    }
+                }
+            } else {
+                val sdf = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+                items(loans, key = { it.id }) { loan ->
+                    val currentMonthlyInterest = if (loan.hasInterest) (loan.amount * loan.monthlyRate) / 100.0 else 0.0
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedLoanForPassbook = loan },
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = if (loan.isSettled) Color(0xFF0F172A) else Color(0xFF111827)),
+                        border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(if (loan.isSettled) Color(0xFF1F2937) else Color(0xFF334155)))
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (loan.isSettled) Color(0xFF334155) else if (loan.type == "TAKEN") Color(0xFFEF4444) else Color(0xFF10B981)
+                                ) {
+                                    Text(
+                                        text = if (loan.isSettled) "FULLY SETTLED" else if (loan.type == "TAKEN") "BORROWED (DEBT)" else "LENT (CREDIT)",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = if (loan.isSettled || loan.type == "TAKEN") Color.White else Color.Black,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                                Text("Start: ${sdf.format(Date(loan.startDate))}", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(loan.personName, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    if (loan.originalAmount > loan.amount) {
+                                        Text("Original: ₹${String.format("%,.0f", loan.originalAmount)} (₹${String.format("%,.0f", loan.originalAmount - loan.amount)} Paid)", fontSize = 11.sp, color = Color(0xFF10B981))
+                                    }
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        "₹${String.format("%,.0f", loan.amount)}",
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = if (loan.type == "TAKEN") Color(0xFFF87171) else Color(0xFF34D399)
+                                    )
+                                    Text("Balance Due", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                }
+                            }
+
+                            if (loan.hasInterest && !loan.isSettled) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFF030712))
+                                        .border(1.dp, Color(0xFF1F2937), RoundedCornerShape(10.dp))
+                                        .padding(10.dp)
+                                ) {
+                                    Column {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text("Interest: ${loan.monthlyRate}% / month", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                                            Text("₹${String.format("%,.0f", currentMonthlyInterest)}/mo", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                                        }
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            "₹${currentMonthlyInterest.toInt()} monthly interest on remaining ₹${loan.amount.toInt()}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFFBBF24)
+                                        )
+                                    }
+                                }
+                            } else if (!loan.hasInterest && !loan.isSettled) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text("Zero Interest (Friend/Family)", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            }
+
+                            if (!loan.isSettled) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (loan.hasInterest) {
+                                        Button(
+                                            modifier = Modifier.weight(1f).height(36.dp),
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
+                                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8)),
+                                            onClick = {
+                                                paymentActionType = "INTEREST"
+                                                activeLoanForPayment = loan
+                                            }
+                                        ) {
+                                            Text("Pay Interest", fontSize = 10.sp, color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+
+                                    Button(
+                                        modifier = Modifier.weight(1.1f).height(36.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF10B981)),
+                                        onClick = {
+                                            paymentActionType = "PRINCIPAL"
+                                            activeLoanForPayment = loan
+                                        }
+                                    ) {
+                                        Text("Repay Principal", fontSize = 10.sp, color = Color(0xFF34D399), fontWeight = FontWeight.Bold)
+                                    }
+
+                                    Button(
+                                        modifier = Modifier.weight(0.9f).height(36.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = if (loan.type == "TAKEN") Color(0xFF10B981) else Color(0xFF2563EB)),
+                                        onClick = { loanToSettle = loan }
+                                    ) {
+                                        Text(
+                                            text = if (loan.type == "TAKEN") "Settle" else "Received",
+                                            fontSize = 10.sp,
+                                            color = if (loan.type == "TAKEN") Color.Black else Color.White,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAddLoanModal) {
+        AddNewLoanDialog(
+            onDismiss = { showAddLoanModal = false },
+            onSave = { name, amount, type, hasInt, rate, date, note ->
+                coroutineScope.launch {
+                    loanDao.insertLoan(
+                        LoanRecord(
+                            personName = name,
+                            amount = amount,
+                            originalAmount = amount,
+                            type = type,
+                            hasInterest = hasInt,
+                            monthlyRate = rate,
+                            startDate = date,
+                            note = note
+                        )
+                    )
+                    showAddLoanModal = false
+                }
+            }
+        )
+    }
+
+    activeLoanForPayment?.let { loan ->
+        val defaultAmt = if (paymentActionType == "INTEREST") {
+            (loan.amount * loan.monthlyRate / 100.0).toString()
+        } else ""
+
+        RecordPaymentDialog(
+            loan = loan,
+            paymentType = paymentActionType,
+            defaultAmount = defaultAmt,
+            onDismiss = { activeLoanForPayment = null },
+            onConfirm = { amountPaid, mode, payDate, note ->
+                coroutineScope.launch {
+                    loanDao.insertInterestPayment(
+                        InterestPayment(
+                            loanId = loan.id,
+                            amount = amountPaid,
+                            paymentType = paymentActionType,
+                            paymentMode = mode,
+                            paymentDate = payDate,
+                            note = note
+                        )
+                    )
+
+                    if (paymentActionType == "PRINCIPAL") {
+                        val newBalance = (loan.amount - amountPaid).coerceAtLeast(0.0)
+                        val isFullyPaid = newBalance <= 0.0
+                        loanDao.updateLoan(loan.copy(amount = newBalance, isSettled = isFullyPaid))
+                    }
+
+                    val tx = Transaction(
+                        amount = amountPaid,
+                        type = if (loan.type == "TAKEN") "DEBIT" else "CREDIT",
+                        mode = mode,
+                        txCategory = if (paymentActionType == "INTEREST") "Bills" else "Other",
+                        description = if (paymentActionType == "INTEREST") "Interest to ${loan.personName}" else "Loan Return to ${loan.personName}",
+                        timestamp = payDate
+                    )
+                    transactionDao.insertTransaction(tx)
+                    FirebaseSync.saveToFirebase(tx)
+
+                    activeLoanForPayment = null
+                }
+            }
+        )
+    }
+
+    selectedLoanForPassbook?.let { loan ->
+        LoanPassbookDialog(
+            loan = loan,
+            loanDao = loanDao,
+            onDismiss = { selectedLoanForPassbook = null }
+        )
+    }
+
+    loanToSettle?.let { loan ->
+        AlertDialog(
+            containerColor = Color(0xFF111827),
+            titleContentColor = Color.White,
+            textContentColor = Color(0xFF94A3B8),
+            onDismissRequest = { loanToSettle = null },
+            title = { Text("Complete Settlement?") },
+            text = { Text("Has the full balance of ₹${loan.amount} for ${loan.personName} been settled?") },
+            confirmButton = {
+                Button(
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                    onClick = {
+                        coroutineScope.launch {
+                            loanDao.updateLoan(loan.copy(amount = 0.0, isSettled = true))
+                            loanToSettle = null
+                        }
+                    }
+                ) { Text("Yes, Mark Settled", color = Color.Black, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { loanToSettle = null }) { Text("Cancel", color = Color.Gray) } }
+        )
+    }
+}
+
+// ---------------- DIALOG: RECORD PAYMENT ----------------
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RecordPaymentDialog(
+    loan: LoanRecord,
+    paymentType: String,
+    defaultAmount: String,
+    onDismiss: () -> Unit,
+    onConfirm: (amount: Double, mode: String, date: Long, note: String) -> Unit
+) {
+    var amount by remember { mutableStateOf(defaultAmount) }
+    var mode by remember { mutableStateOf("ONLINE") }
+    var selectedDate by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var note by remember { mutableStateOf("") }
+    var showDatePicker by remember { mutableStateOf(false) }
+    val datePickerState = rememberDatePickerState(initialSelectedDateMillis = selectedDate)
+    val sdf = SimpleDateFormat("dd MMMM yyyy", Locale.getDefault())
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF111827),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(
+                    text = if (paymentType == "INTEREST") "Pay Interest (${loan.personName})" else "Repay Principal (${loan.personName})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    color = Color.White
+                )
+                Text(
+                    text = if (paymentType == "INTEREST") "Record monthly interest payment" else "Balance due: ₹${loan.amount.toInt()}. Enter amount:",
+                    fontSize = 11.sp,
+                    color = Color(0xFF94A3B8)
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text("PAYMENT MODE", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF64748B))
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("ONLINE" to "📱 ONLINE / UPI", "CASH" to "💵 CASH").forEach { (key, label) ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (mode == key) Color(0xFF1E293B) else Color(0xFF0F172A))
+                                .border(1.dp, if (mode == key) Color(0xFF38BDF8) else Color(0xFF1F2937), RoundedCornerShape(8.dp))
+                                .clickable { mode = key }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (mode == key) Color(0xFF38BDF8) else Color(0xFF94A3B8))
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = amount,
+                    onValueChange = { amount = it },
+                    label = { Text("Amount (₹)", color = Color(0xFF94A3B8)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = Color(0xFF38BDF8),
+                        unfocusedBorderColor = Color(0xFF334155)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFF0B0F19),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showDatePicker = true }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.DateRange, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Date: ${sdf.format(Date(selectedDate))}", color = Color.White, fontSize = 12.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("Note (Optional, e.g. UPI Ref / Details)", color = Color(0xFF94A3B8)) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = Color(0xFF38BDF8),
+                        unfocusedBorderColor = Color(0xFF334155)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                    onClick = {
+                        val amt = amount.toDoubleOrNull()
+                        if (amt != null && amt > 0) {
+                            onConfirm(amt, mode, selectedDate, note.ifBlank { if (paymentType == "INTEREST") "Interest Payment" else "Principal Repayment" })
+                        }
+                    }
+                ) {
+                    Text("Confirm Payment (₹${amount.ifBlank { "0" }})", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                TextButton(modifier = Modifier.fillMaxWidth(), onClick = onDismiss) {
+                    Text("Cancel", color = Color(0xFF94A3B8))
+                }
+            }
+        }
+    }
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    datePickerState.selectedDateMillis?.let { selectedDate = it }
+                    showDatePicker = false
+                }) { Text("OK", color = Color(0xFF10B981), fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("Cancel") } }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
+}
+
+// ---------------- DIALOG: ADD NEW LOAN ----------------
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddNewLoanDialog(
+    onDismiss: () -> Unit,
+    onSave: (name: String, amount: Double, type: String, hasInt: Boolean, rate: Double, date: Long, note: String) -> Unit
+) {
+    var personName by remember { mutableStateOf("") }
+    var amount by remember { mutableStateOf("") }
+    var type by remember { mutableStateOf("TAKEN") }
+    var hasInterest by remember { mutableStateOf(false) }
+    var interestRate by remember { mutableStateOf("2.0") }
+    var note by remember { mutableStateOf("") }
+
+    var selectedDateMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    val datePickerState = rememberDatePickerState(initialSelectedDateMillis = selectedDateMillis)
+    val sdf = SimpleDateFormat("dd MMMM yyyy", Locale.getDefault())
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF111827),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("New Credit / Loan Record", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
+                Text("Track money borrowed or lent with interest", fontSize = 11.sp, color = Color(0xFF94A3B8))
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF030712))
+                        .padding(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (type == "TAKEN") Color(0xFFEF4444) else Color.Transparent)
+                            .clickable { type = "TAKEN" }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Borrowed (Debt)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (type == "TAKEN") Color.White else Color(0xFF94A3B8))
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (type == "GIVEN") Color(0xFF10B981) else Color.Transparent)
+                            .clickable { type = "GIVEN" }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Lent (Credit)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (type == "GIVEN") Color.Black else Color(0xFF94A3B8))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = personName,
+                    onValueChange = { personName = it },
+                    label = { Text("Person Name (e.g. John, Raj)", color = Color(0xFF94A3B8)) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = Color(0xFF38BDF8),
+                        unfocusedBorderColor = Color(0xFF334155)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = amount,
+                    onValueChange = { amount = it },
+                    label = { Text("Principal Amount (₹)", color = Color(0xFF94A3B8)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = Color(0xFF38BDF8),
+                        unfocusedBorderColor = Color(0xFF334155)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFF0B0F19),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showDatePicker = true }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.DateRange, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Start Date: ${sdf.format(Date(selectedDateMillis))}", color = Color.White, fontSize = 13.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF030712),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, if (hasInterest) Color(0xFF10B981) else Color(0xFF1F2937)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Apply Monthly Interest?", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Switch(
+                                checked = hasInterest,
+                                onCheckedChange = { hasInterest = it },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Color(0xFF10B981))
+                            )
+                        }
+
+                        if (hasInterest) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = interestRate,
+                                onValueChange = { interestRate = it },
+                                label = { Text("Monthly Rate % (e.g. 2.0)", color = Color(0xFF94A3B8)) },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White,
+                                    focusedBorderColor = Color(0xFF10B981),
+                                    unfocusedBorderColor = Color(0xFF334155)
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Button(
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                    onClick = {
+                        val amt = amount.toDoubleOrNull()
+                        val rate = interestRate.toDoubleOrNull() ?: 0.0
+                        if (personName.isNotBlank() && amt != null && amt > 0) {
+                            onSave(personName, amt, type, hasInterest, rate, selectedDateMillis, note)
+                        }
+                    }
+                ) {
+                    Text("Save Record", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                TextButton(modifier = Modifier.fillMaxWidth(), onClick = onDismiss) {
+                    Text("Cancel", color = Color(0xFF94A3B8))
+                }
+            }
+        }
+    }
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    datePickerState.selectedDateMillis?.let { selectedDateMillis = it }
+                    showDatePicker = false
+                }) { Text("OK", color = Color(0xFF10B981), fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("Cancel") } }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
+}
+
+// ---------------- DIALOG: PAYMENT PASSBOOK ----------------
+@Composable
+fun LoanPassbookDialog(
+    loan: LoanRecord,
+    loanDao: LoanDao,
+    onDismiss: () -> Unit
+) {
+    val payments by loanDao.getInterestPayments(loan.id).collectAsState(initial = emptyList())
+    val sdf = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF111827),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("${loan.personName} - Passbook", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color.White)
+                Text("Balance Due: ₹${String.format("%,.0f", loan.amount)} • Original: ₹${String.format("%,.0f", loan.originalAmount)}", fontSize = 11.sp, color = Color(0xFF94A3B8))
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                if (payments.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        Text("No payment records found yet", color = Color(0xFF64748B), fontSize = 12.sp)
+                    }
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 240.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(payments) { p ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color(0xFF0F172A))
+                                    .padding(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = if (p.paymentType == "INTEREST") "Interest Paid (${p.paymentMode})" else "Principal Paid (${p.paymentMode})",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = if (p.paymentType == "INTEREST") Color(0xFF38BDF8) else Color(0xFF34D399)
+                                        )
+                                        Text(sdf.format(Date(p.paymentDate)), fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                    }
+                                    Text("₹${String.format("%,.0f", p.amount)}", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Color.White)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
+                    onClick = onDismiss
+                ) {
+                    Text("Close", color = Color.White)
+                }
+            }
+        }
+    }
+}
+
+// ---------------- FINTECH DASHBOARD SCREEN ----------------
 data class MonthItem(val label: String, val startMillis: Long, val endMillis: Long)
 
 fun getAvailableMonths(): List<MonthItem> {
@@ -132,7 +995,11 @@ fun isWeekend(timestamp: Long): Boolean {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
+fun FintechDashboardScreen(
+    dao: TransactionDao,
+    context: Context,
+    onOpenDrawer: () -> Unit
+) {
     val coroutineScope = rememberCoroutineScope()
     val months = remember { getAvailableMonths() }
     var selectedMonthIndex by remember { mutableIntStateOf(0) }
@@ -156,7 +1023,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
 
     val totalDebit = monthTransactions.filter { it.type == "DEBIT" }.sumOf { it.amount }
     val totalCredit = monthTransactions.filter { it.type == "CREDIT" }.sumOf { it.amount }
-    val balance = totalCredit - totalDebit
 
     val driverTxs = monthTransactions.filter { (it.mode == "UBER" || it.mode == "RAPIDO") && it.type == "CREDIT" }
     val filteredDriverTxs = when (driverFilter) {
@@ -187,6 +1053,11 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
         containerColor = Color(0xFF0B0F19),
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Default.Menu, contentDescription = "Menu", tint = Color(0xFF38BDF8))
+                    }
+                },
                 title = {
                     Column {
                         Text("Finance & Side-Drive", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
@@ -262,7 +1133,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                 contentColor = Color.White,
                 shape = RoundedCornerShape(14.dp),
                 icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("+ Add Entry / Ride", fontWeight = FontWeight.Bold) }
+                text = { Text("+ Add Transaction", fontWeight = FontWeight.Bold) }
             )
         }
     ) { padding ->
@@ -274,7 +1145,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // CARD 1: COMMUTE & WEEKEND EARNINGS
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -323,7 +1193,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                             verticalAlignment = Alignment.Bottom
                         ) {
                             Column {
-                                Text("Platform Earning", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text("Platform Earnings", fontSize = 11.sp, color = Color(0xFF94A3B8))
                                 Text(
                                     "₹${String.format("%,.0f", totalDriverEarn)}",
                                     fontSize = 28.sp,
@@ -337,7 +1207,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                                 color = if (netExtraIncome >= 0) Color(0x2210B981) else Color(0x22EF4444)
                             ) {
                                 Text(
-                                    text = if (netExtraIncome >= 0) "Net: +₹${String.format("%,.0f", netExtraIncome)} (Petrol Free!)" else "Net: ₹${String.format("%,.0f", netExtraIncome)}",
+                                    text = if (netExtraIncome >= 0) "Net: +₹${String.format("%,.0f", netExtraIncome)} (Fuel Covered!)" else "Net: ₹${String.format("%,.0f", netExtraIncome)}",
                                     color = if (netExtraIncome >= 0) Color(0xFF34D399) else Color(0xFFF87171),
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
@@ -383,7 +1253,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                 }
             }
 
-            // CARD 2: DONUT CHART
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -392,12 +1261,12 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                     border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF1F2937)))
                 ) {
                     Column(modifier = Modifier.padding(18.dp)) {
-                        Text("Where is money going? (Kharcha)", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFFF1F5F9))
+                        Text("Expense Breakdown by Category", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFFF1F5F9))
                         Spacer(modifier = Modifier.height(16.dp))
 
                         val expenseItems = monthTransactions.filter { it.type == "DEBIT" }
                         if (expenseItems.isEmpty()) {
-                            Text("Is range me koi kharcha record nahi hua", color = Color(0xFF64748B), fontSize = 12.sp)
+                            Text("No expenses recorded in this period", color = Color(0xFF64748B), fontSize = 12.sp)
                         } else {
                             CategoryDonutSection(expenses = expenseItems)
                         }
@@ -405,7 +1274,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                 }
             }
 
-            // TRANSACTIONS LIST
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -419,7 +1287,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
             if (monthTransactions.isEmpty()) {
                 item {
                     Box(modifier = Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
-                        Text("Koi record nahi mila", color = Color(0xFF64748B), fontSize = 13.sp)
+                        Text("No transactions found", color = Color(0xFF64748B), fontSize = 13.sp)
                     }
                 }
             } else {
@@ -505,7 +1373,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
         }
     }
 
-    // Custom Date Range Picker Dialog
     if (showRangePicker) {
         DatePickerDialog(
             onDismissRequest = { showRangePicker = false },
@@ -540,7 +1407,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
         }
     }
 
-    // Modal: Fast Entry Dialog
     if (showAddModal) {
         ModernFastEntryDialog(
             title = "New Transaction",
@@ -562,7 +1428,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
         )
     }
 
-    // Modal: Edit Entry
     editingItem?.let { tx ->
         ModernFastEntryDialog(
             title = "Edit Entry",
@@ -589,7 +1454,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
         )
     }
 
-    // Modal: Delete Confirm
     deletingItem?.let { tx ->
         AlertDialog(
             containerColor = Color(0xFF111827),
@@ -597,7 +1461,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
             textContentColor = Color(0xFF94A3B8),
             onDismissRequest = { deletingItem = null },
             title = { Text("Delete Entry") },
-            text = { Text("₹${tx.amount} ki entry delete karni hai?") },
+            text = { Text("Are you sure you want to delete this ₹${tx.amount} entry?") },
             confirmButton = {
                 Button(
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
@@ -768,7 +1632,7 @@ fun ModernFastEntryDialog(
                 Spacer(modifier = Modifier.height(6.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     val shortcuts = if (type == "CREDIT") listOf(50 to "Ride", 80 to "Ride", 120 to "Ride", 180 to "Ride")
-                    else listOf(100 to "Petrol", 200 to "Petrol", 20 to "Chai", 500 to "Fuel")
+                    else listOf(100 to "Fuel", 200 to "Fuel", 20 to "Tea", 500 to "Service")
 
                     items(shortcuts) { (amtVal, label) ->
                         Surface(
@@ -776,8 +1640,9 @@ fun ModernFastEntryDialog(
                             color = Color(0xFF1E293B),
                             modifier = Modifier.clickable {
                                 amount = amtVal.toString()
-                                if (label == "Petrol" || label == "Fuel") category = "Petrol"
-                                if (label == "Chai") category = "Food"
+                                if (label == "Fuel") category = "Petrol"
+                                if (label == "Tea") category = "Food"
+                                if (label == "Service") category = "Maintenance"
                                 desc = "$label ₹$amtVal"
                             }
                         ) {
@@ -828,7 +1693,7 @@ fun ModernFastEntryDialog(
                     value = desc,
                     onValueChange = { desc = it },
                     label = { Text("Note / Description", color = Color(0xFF94A3B8)) },
-                    placeholder = { Text("e.g. Office to Home, Tea, etc.", color = Color(0xFF64748B)) },
+                    placeholder = { Text("e.g. Office to Home ride, Fuel, Tea", color = Color(0xFF64748B)) },
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
@@ -887,7 +1752,7 @@ fun exportPdf(
     paint.textSize = 20f
     paint.isFakeBoldText = true
     paint.color = android.graphics.Color.BLACK
-    canvas.drawText("Fintech & Driver Statement - $dateRangeLabel", 40f, 50f, paint)
+    canvas.drawText("Statement - $dateRangeLabel", 40f, 50f, paint)
 
     paint.textSize = 12f
     paint.isFakeBoldText = false
