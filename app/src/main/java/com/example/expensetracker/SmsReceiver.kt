@@ -33,7 +33,6 @@ class SmsReceiver : BroadcastReceiver() {
 
         if (!isDebit && !isCredit) return
 
-        // Regex se amount nikalna (e.g., INR 500, Rs. 1,200.50, Rs 50)
         val pattern = Pattern.compile("(?i)(?:inr|rs\\.?)\\s*([0-9,]+(?:\\.[0-9]{1,2})?)")
         val matcher = pattern.matcher(body)
 
@@ -48,12 +47,11 @@ class SmsReceiver : BroadcastReceiver() {
                     Transaction(
                         amount = amount,
                         type = type,
-                        mode = "BANK_SMS",
-                        description = if (body.length > 50) body.take(50) + "..." else body
+                        mode = "ONLINE", // Bank SMS auto classified as ONLINE
+                        description = if (body.length > 60) body.take(60) + "..." else body
                     )
                 )
 
-                // Agar Debit hua toh warning check karna
                 if (type == "DEBIT") {
                     checkAndNotifyBudget(context, amount)
                 }
@@ -79,8 +77,8 @@ class SmsReceiver : BroadcastReceiver() {
 
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("Bank SMS Detected: Rs. $lastAmount Debited")
-            .setContentText("Total spending check karein. Aapka set budget: Rs. $budgetLimit")
+            .setContentTitle("Online Bank Transaction Detected")
+            .setContentText("₹$lastAmount debited. Aapka monthly target limit: ₹$budgetLimit")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
 
