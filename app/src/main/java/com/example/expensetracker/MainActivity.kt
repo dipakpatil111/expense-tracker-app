@@ -138,7 +138,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
     var selectedMonthIndex by remember { mutableIntStateOf(0) }
     var monthMenuExpanded by remember { mutableStateOf(false) }
 
-    // Date Range Picker States
     var isCustomRange by remember { mutableStateOf(false) }
     var showRangePicker by remember { mutableStateOf(false) }
     val dateRangePickerState = rememberDateRangePickerState()
@@ -153,7 +152,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
     val monthTransactions by dao.getTransactionsByDateRange(activeStartMillis, activeEndMillis)
         .collectAsState(initial = emptyList())
 
-    // Filter Mode: COMMUTE (Mon-Fri), WEEKEND (Sat-Sun), ALL
     var driverFilter by remember { mutableStateOf("COMMUTE") }
 
     val totalDebit = monthTransactions.filter { it.type == "DEBIT" }.sumOf { it.amount }
@@ -171,7 +169,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
     val rapidoTotal = filteredDriverTxs.filter { it.mode == "RAPIDO" }.sumOf { it.amount }
     val totalDriverEarn = uberTotal + rapidoTotal
 
-    val petrolSpent = monthTransactions.filter { it.category == "Petrol" && it.type == "DEBIT" }.sumOf { it.amount }
+    val petrolSpent = monthTransactions.filter { it.txCategory == "Petrol" && it.type == "DEBIT" }.sumOf { it.amount }
     val netExtraIncome = totalDriverEarn - petrolSpent
 
     var showAddModal by remember { mutableStateOf(false) }
@@ -196,12 +194,10 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                     }
                 },
                 actions = {
-                    // Custom Date Range Picker Button
                     IconButton(onClick = { showRangePicker = true }) {
                         Icon(Icons.Default.DateRange, contentDescription = "Custom Date Range", tint = Color(0xFF38BDF8))
                     }
 
-                    // Month Selector Dropdown
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = Color(0xFF1E293B),
@@ -238,7 +234,6 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
 
                     Spacer(modifier = Modifier.width(6.dp))
 
-                    // PDF Export Button
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = Color(0xFF1E293B),
@@ -388,7 +383,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                 }
             }
 
-            // CARD 2: CATEGORY DONUT EXPENSE CHART
+            // CARD 2: DONUT CHART
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -410,7 +405,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                 }
             }
 
-            // TRANSACTIONS LIST HEADER
+            // TRANSACTIONS LIST
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -442,7 +437,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                val iconColor = when (item.category) {
+                                val iconColor = when (item.txCategory) {
                                     "Petrol" -> Color(0xFFEF4444)
                                     "Food" -> Color(0xFFF59E0B)
                                     "Bills" -> Color(0xFF38BDF8)
@@ -459,7 +454,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
-                                        imageVector = when (item.category) {
+                                        imageVector = when (item.txCategory) {
                                             "Petrol" -> Icons.Default.Place
                                             "Food" -> Icons.Default.ShoppingCart
                                             "Bills" -> Icons.Default.Email
@@ -481,7 +476,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(item.mode, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF38BDF8))
                                         Text(" • ", fontSize = 10.sp, color = Color(0xFF64748B))
-                                        Text(item.category, fontSize = 10.sp, color = Color(0xFFCBD5E1))
+                                        Text(item.txCategory, fontSize = 10.sp, color = Color(0xFFCBD5E1))
                                         Text(" • ", fontSize = 10.sp, color = Color(0xFF64748B))
                                         Text(sdf.format(Date(item.timestamp)), fontSize = 10.sp, color = Color(0xFF64748B))
                                     }
@@ -545,18 +540,18 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
         }
     }
 
-    // Modal: 1-Tap Fast Entry Dialog
+    // Modal: Fast Entry Dialog
     if (showAddModal) {
         ModernFastEntryDialog(
             title = "New Transaction",
             onDismiss = { showAddModal = false },
-            onSave = { amount, desc, type, mode, category ->
+            onSave = { amount, desc, type, mode, categorySelected ->
                 coroutineScope.launch {
                     val newTx = Transaction(
                         amount = amount,
                         type = type,
                         mode = mode,
-                        category = category,
+                        txCategory = categorySelected,
                         description = desc
                     )
                     dao.insertTransaction(newTx)
@@ -567,7 +562,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
         )
     }
 
-    // Modal: Edit
+    // Modal: Edit Entry
     editingItem?.let { tx ->
         ModernFastEntryDialog(
             title = "Edit Entry",
@@ -575,16 +570,16 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
             initialDesc = tx.description,
             initialType = tx.type,
             initialMode = tx.mode,
-            initialCategory = tx.category,
+            initialCategory = tx.txCategory,
             onDismiss = { editingItem = null },
-            onSave = { amount, desc, type, mode, category ->
+            onSave = { amount, desc, type, mode, categorySelected ->
                 coroutineScope.launch {
                     val updatedTx = tx.copy(
                         amount = amount,
                         description = desc,
                         type = type,
                         mode = mode,
-                        category = category
+                        txCategory = categorySelected
                     )
                     dao.updateTransaction(updatedTx)
                     FirebaseSync.saveToFirebase(updatedTx)
@@ -623,7 +618,7 @@ fun FintechDashboardScreen(dao: TransactionDao, context: Context) {
 @Composable
 fun CategoryDonutSection(expenses: List<Transaction>) {
     val totalExpense = expenses.sumOf { it.amount }.toFloat().coerceAtLeast(1f)
-    val grouped = expenses.groupBy { it.category }
+    val grouped = expenses.groupBy { it.txCategory }
         .mapValues { it.value.sumOf { tx -> tx.amount }.toFloat() }
         .toList()
         .sortedByDescending { it.second }
@@ -682,7 +677,7 @@ fun ModernFastEntryDialog(
     initialMode: String = "UBER",
     initialCategory: String = "Rides",
     onDismiss: () -> Unit,
-    onSave: (amount: Double, desc: String, type: String, mode: String, category: String) -> Unit
+    onSave: (amount: Double, desc: String, type: String, mode: String, categorySelected: String) -> Unit
 ) {
     var amount by remember { mutableStateOf(initialAmount) }
     var desc by remember { mutableStateOf(initialDesc) }
@@ -930,7 +925,7 @@ fun exportPdf(
         canvas.drawText(sdf.format(Date(tx.timestamp)), 40f, y, paint)
         val shortDesc = if (tx.description.length > 20) tx.description.take(20) + ".." else tx.description
         canvas.drawText(shortDesc, 140f, y, paint)
-        canvas.drawText(tx.category, 310f, y, paint)
+        canvas.drawText(tx.txCategory, 310f, y, paint)
         canvas.drawText(tx.mode, 410f, y, paint)
         canvas.drawText("Rs. ${tx.amount}", 490f, y, paint)
     }

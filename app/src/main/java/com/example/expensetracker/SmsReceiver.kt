@@ -41,23 +41,27 @@ class SmsReceiver : BroadcastReceiver() {
             val amount = amountString.toDoubleOrNull() ?: return
             val type = if (isDebit) "DEBIT" else "CREDIT"
 
+            val detectedCategory = when {
+                lowerBody.contains("hpcl") || lowerBody.contains("bpcl") || lowerBody.contains("iocl") || lowerBody.contains("fuel") || lowerBody.contains("petrol") -> "Petrol"
+                lowerBody.contains("swiggy") || lowerBody.contains("zomato") || lowerBody.contains("restaurant") || lowerBody.contains("cafe") || lowerBody.contains("tea") -> "Food"
+                lowerBody.contains("recharge") || lowerBody.contains("airtel") || lowerBody.contains("jio") || lowerBody.contains("broadband") || lowerBody.contains("electric") -> "Bills"
+                lowerBody.contains("uber") || lowerBody.contains("rapido") || lowerBody.contains("ola") -> "Rides"
+                else -> "Other"
+            }
+
             val db = AppDatabase.getDatabase(context)
             CoroutineScope(Dispatchers.IO).launch {
-                // 1. Transaction object create karein
                 val newTx = Transaction(
                     amount = amount,
                     type = type,
-                    mode = "ONLINE", // Bank SMS automatically ONLINE mode me jayega
-                    description = if (body.length > 60) body.take(60) + "..." else body
+                    mode = "ONLINE",
+                    txCategory = detectedCategory,
+                    description = if (body.length > 50) body.take(50) + "..." else body
                 )
 
-                // 2. Local SQLite (Room) Database me save karein
                 db.transactionDao().insertTransaction(newTx)
-
-                // 3. Firebase Cloud Firestore me sync karein
                 FirebaseSync.saveToFirebase(newTx)
 
-                // 4. Agar Debit hua toh budget warning alert bhejein
                 if (type == "DEBIT") {
                     checkAndNotifyBudget(context, amount)
                 }
@@ -67,24 +71,20 @@ class SmsReceiver : BroadcastReceiver() {
 
     private fun checkAndNotifyBudget(context: Context, lastAmount: Double) {
         val sharedPref = context.getSharedPreferences("ExpensePrefs", Context.MODE_PRIVATE)
-        val budgetLimit = sharedPref.getFloat("budget_limit", 10000f)
+        val budgetLimit = sharedPref.getFloat("budget_limit", 15000f)
 
         val channelId = "expense_alert_channel"
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "Expense Alerts",
-                NotificationManager.IMPORTANCE_HIGH
-            )
+            val channel = NotificationChannel(channelId, "Expense Alerts", NotificationManager.IMPORTANCE_HIGH)
             manager.createNotificationChannel(channel)
         }
 
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("Online Bank Transaction Detected")
-            .setContentText("₹$lastAmount debited. Aapka monthly target limit: ₹$budgetLimit")
+            .setContentTitle("Transaction Detected")
+            .setContentText("₹$lastAmount debited. Target limit: ₹$budgetLimit")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
 
