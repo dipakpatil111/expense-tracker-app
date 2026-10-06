@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -50,6 +52,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Runtime Permissions check
         val permissions = mutableListOf(
             Manifest.permission.RECEIVE_SMS,
             Manifest.permission.READ_SMS
@@ -67,6 +70,11 @@ class MainActivity : ComponentActivity() {
 
         val db = AppDatabase.getDatabase(this)
         val dao = db.transactionDao()
+
+        // Sync from Firebase Firestore to local Room Database on app launch / reinstall
+        lifecycleScope.launch(Dispatchers.IO) {
+            FirebaseSync.syncFromCloud(dao)
+        }
 
         setContent {
             MaterialTheme(
@@ -139,9 +147,7 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
     // Driver Earnings Timeframe Filter: DAILY, WEEKLY, MONTHLY
     var earningsTimeframe by remember { mutableStateOf("DAILY") }
 
-    // Calculate timestamps for Daily, Weekly, Monthly
     val now = System.currentTimeMillis()
-    val cal = Calendar.getInstance()
 
     // Daily start (12:00 AM today)
     val startOfDay = remember(now) {
@@ -164,7 +170,7 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
         c.timeInMillis
     }
 
-    // Filter transactions for Driver earnings
+    // Driver earnings (Uber / Rapido)
     val driverEarningTxs = allTransactions.filter { (it.mode == "UBER" || it.mode == "RAPIDO") && it.type == "CREDIT" }
 
     val filteredDriverTxs = when (earningsTimeframe) {
@@ -276,7 +282,6 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
 
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        // Total Earnings Header
                         Text("Total Platform Earnings", fontSize = 12.sp, color = Color.Gray)
                         Text(
                             "₹${String.format("%,.0f", driverTotal)}",
@@ -465,7 +470,7 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
         }
     }
 
-    // Modal: Add Entry (Supports UBER, RAPIDO, CASH, ONLINE)
+    // Modal: Add Entry (Supports UBER, RAPIDO, CASH, ONLINE + Firebase Sync)
     if (showAddModal) {
         DriverEntryDialog(
             title = "Add Earning / Expense",
@@ -473,21 +478,24 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
             onDismiss = { showAddModal = false },
             onSave = { amount, desc, type, mode ->
                 coroutineScope.launch {
-                    dao.insertTransaction(
-                        Transaction(
-                            amount = amount,
-                            type = type,
-                            mode = mode,
-                            description = desc
-                        )
+                    val newTx = Transaction(
+                        amount = amount,
+                        type = type,
+                        mode = mode,
+                        description = desc
                     )
+                    // 1. Local Room SQLite Database me save
+                    dao.insertTransaction(newTx)
+                    // 2. Firebase Cloud Firestore me sync
+                    FirebaseSync.saveToFirebase(newTx)
+
                     showAddModal = false
                 }
             }
         )
     }
 
-    // Modal: Edit Entry
+    // Modal: Edit Entry + Firebase Sync
     editingItem?.let { tx ->
         DriverEntryDialog(
             title = "Edit Entry",
@@ -498,21 +506,24 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
             onDismiss = { editingItem = null },
             onSave = { amount, desc, type, mode ->
                 coroutineScope.launch {
-                    dao.updateTransaction(
-                        tx.copy(
-                            amount = amount,
-                            description = desc,
-                            type = type,
-                            mode = mode
-                        )
+                    val updatedTx = tx.copy(
+                        amount = amount,
+                        description = desc,
+                        type = type,
+                        mode = mode
                     )
+                    // 1. Local Room DB update
+                    dao.updateTransaction(updatedTx)
+                    // 2. Firebase Cloud update
+                    FirebaseSync.saveToFirebase(updatedTx)
+
                     editingItem = null
                 }
             }
         )
     }
 
-    // Modal: Delete Confirm
+    // Modal: Delete Confirm + Firebase Sync
     deletingItem?.let { tx ->
         AlertDialog(
             onDismissRequest = { deletingItem = null },
@@ -523,7 +534,11 @@ fun ExpenseDashboardScreen(dao: TransactionDao, context: Context) {
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
                     onClick = {
                         coroutineScope.launch {
+                            // 1. Local DB se delete
                             dao.deleteTransaction(tx)
+                            // 2. Firebase Cloud se delete
+                            FirebaseSync.deleteFromFirebase(tx.timestamp)
+
                             deletingItem = null
                         }
                     }
@@ -555,7 +570,7 @@ fun DriverEntryDialog(
         title = { Text(title, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // Type Select
+                // Type Select (Earning vs Kharcha)
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
                         selected = type == "CREDIT",

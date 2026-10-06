@@ -43,15 +43,21 @@ class SmsReceiver : BroadcastReceiver() {
 
             val db = AppDatabase.getDatabase(context)
             CoroutineScope(Dispatchers.IO).launch {
-                db.transactionDao().insertTransaction(
-                    Transaction(
-                        amount = amount,
-                        type = type,
-                        mode = "ONLINE", // Bank SMS auto classified as ONLINE
-                        description = if (body.length > 60) body.take(60) + "..." else body
-                    )
+                // 1. Transaction object create karein
+                val newTx = Transaction(
+                    amount = amount,
+                    type = type,
+                    mode = "ONLINE", // Bank SMS automatically ONLINE mode me jayega
+                    description = if (body.length > 60) body.take(60) + "..." else body
                 )
 
+                // 2. Local SQLite (Room) Database me save karein
+                db.transactionDao().insertTransaction(newTx)
+
+                // 3. Firebase Cloud Firestore me sync karein
+                FirebaseSync.saveToFirebase(newTx)
+
+                // 4. Agar Debit hua toh budget warning alert bhejein
                 if (type == "DEBIT") {
                     checkAndNotifyBudget(context, amount)
                 }
