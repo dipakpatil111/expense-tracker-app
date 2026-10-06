@@ -8,8 +8,8 @@ data class Transaction(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val amount: Double,
-    val type: String, // "DEBIT" ya "CREDIT"
-    val mode: String, // "BANK_SMS" ya "CASH"
+    val type: String,       // "CREDIT" ya "DEBIT"
+    val mode: String,       // "ONLINE", "CASH", "UBER", "RAPIDO"
     val description: String,
     val timestamp: Long = System.currentTimeMillis()
 )
