@@ -34,3 +34,9 @@ Voice entry, receipt photos, home widget, multiple wallets / credit-card trackin
 New categories "Rapido Recharge" and "Rapido Subscription". Home and Analytics show a "Rapido net" card:
 Rapido earnings - recharge - subscription (- any other debit with mode RAPIDO). Petrol is NOT subtracted.
 Old recharge entries saved under another category will not count until you edit their category.
+
+## IMPORTANT when copying into your repo
+Delete the old project's `app/src/main/java/com/example/expensetracker/` folder first (or let the new files overwrite).
+The new files use the SAME names as old ones (Transaction.kt, LoanRecord.kt, TransactionDao.kt, LoanDao.kt),
+so nothing stale stays behind. If an old Transaction.kt (without `isDeleted`) is left over, KSP fails with
+"no such column: isDeleted".
