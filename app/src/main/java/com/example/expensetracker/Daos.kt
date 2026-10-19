@@ -20,8 +20,9 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions")
     suspend fun getAllRaw(): List<Transaction>
 
-    @Query("SELECT * FROM transactions WHERE uid = :uid LIMIT 1")
-    suspend fun getByUid(uid: String): Transaction?
+    // uid ki jagah id kar diya gaya hai
+    @Query("SELECT * FROM transactions WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): Transaction? // Agar id String hai toh id: String karein
 
     @Query("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE isDeleted = 0 AND type = 'DEBIT' AND timestamp BETWEEN :start AND :end")
     suspend fun sumDebits(start: Long, end: Long): Double
@@ -44,8 +45,9 @@ interface LoanDao {
     @Query("SELECT * FROM loans")
     suspend fun getAllLoansRaw(): List<LoanRecord>
 
-    @Query("SELECT * FROM loans WHERE uid = :uid LIMIT 1")
-    suspend fun getLoanByUid(uid: String): LoanRecord?
+    // Agar LoanRecord me bhi uid ki jagah id hai:
+    @Query("SELECT * FROM loans WHERE id = :id LIMIT 1")
+    suspend fun getLoanById(id: Long): LoanRecord?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertPayment(p: InterestPayment): Long
@@ -59,8 +61,9 @@ interface LoanDao {
     @Query("SELECT * FROM interest_payments")
     suspend fun getAllPaymentsRaw(): List<InterestPayment>
 
-    @Query("SELECT * FROM interest_payments WHERE uid = :uid LIMIT 1")
-    suspend fun getPaymentByUid(uid: String): InterestPayment?
+    // Agar InterestPayment me bhi uid ki jagah id hai:
+    @Query("SELECT * FROM interest_payments WHERE id = :id LIMIT 1")
+    suspend fun getPaymentById(id: Long): InterestPayment?
 
     @Query("SELECT * FROM interest_payments WHERE loanId = :loanId AND isDeleted = 0")
     suspend fun getPaymentsForLoan(loanId: Long): List<InterestPayment>
