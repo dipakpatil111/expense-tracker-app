@@ -1,6 +1,7 @@
 package com.example.expensetracker
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,8 +17,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun HomeScreen(vm: AppViewModel, onSeeAll: () -> Unit, onEdit: (Transaction) -> Unit, onOpenBudgets: () -> Unit) {
-    val txs by vm.transactions.collectAsState()
+fun HomeScreen(vm: AppViewModel, onSeeAll: () -> Unit, onEdit: (Transaction) -> Unit, onOpenBudgets: () -> Unit,
+    onOpenBalance: () -> Unit, onTransfer: () -> Unit
+) {
+    val txsAll by vm.transactions.collectAsState()
+    val txs = txsAll.filter { !isTransfer(it) }   // transfers are not income / expense
+    val opening by vm.opening.collectAsState()
+    val balTxs by vm.balanceTxs.collectAsState()
+    val balNow = balanceAt(opening, balTxs, System.currentTimeMillis())
     val period by vm.period.collectAsState()
     val totalBudget by vm.totalBudget.collectAsState()
     val catBudgets by vm.categoryBudgets.collectAsState()
@@ -59,21 +66,34 @@ fun HomeScreen(vm: AppViewModel, onSeeAll: () -> Unit, onEdit: (Transaction) -> 
                     .background(Brush.linearGradient(listOf(Color(0xFF4F46E5), Color(0xFF7C3AED)))).padding(20.dp)
             ) {
                 Column {
-                    Text("NET BALANCE", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color.White.copy(alpha = 0.7f))
-                    Text(money(net), fontSize = 34.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                    Text("TOTAL BALANCE NOW", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color.White.copy(alpha = 0.7f))
+                    Text(money(balNow.total), fontSize = 34.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                    if (!opening.isSet) {
+                        Text(
+                            "Opening balance not set – tap to set",
+                            fontSize = 11.sp, color = Color.White.copy(alpha = 0.9f),
+                            modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onOpenBalance).padding(vertical = 4.dp)
+                        )
+                    }
                     Spacer(Modifier.height(14.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        HeroPill("↓ Income", money(totalIn), Modifier.weight(1f))
-                        HeroPill("↑ Expense", money(totalOut), Modifier.weight(1f))
+                        HeroPill("💵 Cash in hand", money(balNow.cash), Modifier.weight(1f))
+                        HeroPill("📱 Bank / Online", money(balNow.bank), Modifier.weight(1f))
                     }
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        HeroPill("💵 Cash in hand", money(cashIn - cashOut), Modifier.weight(1f), "in ${money(cashIn)} • out ${money(cashOut)}")
-                        HeroPill("📱 Bank / Online", money(bankIn - bankOut), Modifier.weight(1f), "in ${money(bankIn)} • out ${money(bankOut)}")
+                        HeroPill("↓ Income (period)", money(totalIn), Modifier.weight(1f))
+                        HeroPill("↑ Expense (period)", money(totalOut), Modifier.weight(1f))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Chip("⇄ Transfer cash / bank", false, onTransfer)
+                        if (opening.isSet) Chip("Edit opening", false, onOpenBalance)
                     }
                 }
             }
         }
+        item { MonthSummaryCard(period, opening, balTxs) }
 
         // ---------- budget ----------
         if (!period.isCustom) {
@@ -134,7 +154,7 @@ fun HomeScreen(vm: AppViewModel, onSeeAll: () -> Unit, onEdit: (Transaction) -> 
 
         // ---------- recent ----------
         item { SectionTitle("Recent transactions", "See all", onSeeAll) }
-        if (txs.isEmpty()) {
+        if (txsAll.isEmpty()) {
             item {
                 AppCard {
                     Text("No transactions in this period yet.\nTap  + Add  to record your first one.", fontSize = 13.sp, color = Th.textMuted)
@@ -143,7 +163,7 @@ fun HomeScreen(vm: AppViewModel, onSeeAll: () -> Unit, onEdit: (Transaction) -> 
         } else {
             item {
                 AppCard(padding = 8.dp) {
-                    txs.take(6).forEachIndexed { i, t ->
+                    txsAll.take(6).forEachIndexed { i, t ->
                         if (i > 0) Hairline()
                         TxRow(t) { onEdit(t) }
                     }

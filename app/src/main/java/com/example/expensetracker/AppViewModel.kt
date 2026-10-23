@@ -91,6 +91,19 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
     val userEmail = MutableStateFlow(FirebaseSync.currentEmail)
     val syncStatus = MutableStateFlow("")
 
+    // ---------------- opening balance & running balance ----------------
+    val opening = MutableStateFlow(Opening(prefs.openingCash, prefs.openingBank, prefs.openingDate))
+
+    /** every entry (incl. transfers) from the opening date onwards, oldest first - used to build running balances */
+    val balanceTxs: StateFlow<List<Transaction>> = opening
+        .flatMapLatest { txDao.observeFrom(it.date) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun saveOpening(cash: Double, bank: Double, date: Long) {
+        prefs.openingCash = cash; prefs.openingBank = bank; prefs.openingDate = date
+        opening.value = Opening(cash, bank, date)
+    }
+
     fun setTheme(mode: String) { prefs.themeMode = mode; themeMode.value = mode }
     fun setAppLock(on: Boolean) { prefs.appLock = on; appLock.value = on; if (on) unlocked = true }
     fun setSmsTracking(on: Boolean) { prefs.smsTracking = on; smsTracking.value = on }
@@ -142,6 +155,29 @@ class AppViewModel(private val app: Application) : AndroidViewModel(app) {
             txDao.update(t)
             FirebaseSync.pushTransaction(t)
         }
+    }
+
+    /** cash <-> bank transfer: two linked rows (one debit, one credit) in category Transfer. */
+    fun addTransfer(amount: Double, cashToBank: Boolean, timestamp: Long, note: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val label = if (cashToBank) "Transfer: Cash → Bank" else "Transfer: Bank → Cash"
+            val desc = if (note.isBlank()) label else "$label ($note)"
+            val out = Transaction(amount = amount, type = "DEBIT", mode = if (cashToBank) "CASH" else "ONLINE",
+                txCategory = TRANSFER, description = desc, timestamp = timestamp)
+            val inn = Transaction(amount = amount, type = "CREDIT", mode = if (cashToBank) "ONLINE" else "CASH",
+                txCategory = TRANSFER, description = desc, timestamp = timestamp)
+            FirebaseSync.pushTransaction(out.copy(id = txDao.insertIgnore(out)))
+            FirebaseSync.pushTransaction(inn.copy(id = txDao.insertIgnore(inn)))
+        }
+    }
+
+    /** deletes both halves of a transfer */
+    fun deleteTransfer(tx: Transaction) {
+        val pair = transactions.value.firstOrNull {
+            it.txCategory == TRANSFER && it.id != tx.id && it.timestamp == tx.timestamp && it.amount == tx.amount && it.type != tx.type
+        }
+        setDeleted(tx, true)
+        if (pair != null) setDeleted(pair, true)
     }
 
     suspend fun allTransactionsForExport(): List<Transaction> = withContext(Dispatchers.IO) { txDao.getAllActive() }

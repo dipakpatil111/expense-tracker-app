@@ -22,8 +22,10 @@ import kotlin.math.abs
 
 @Composable
 fun AnalyticsScreen(vm: AppViewModel) {
-    val txs by vm.transactions.collectAsState()
-    val prev by vm.previousTransactions.collectAsState()
+    val txsAll by vm.transactions.collectAsState()
+    val txs = txsAll.filter { !isTransfer(it) }
+    val prevAll by vm.previousTransactions.collectAsState()
+    val prev = prevAll.filter { !isTransfer(it) }
     val period by vm.period.collectAsState()
     val catBudgets by vm.categoryBudgets.collectAsState()
 

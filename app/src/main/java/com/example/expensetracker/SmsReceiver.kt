@@ -26,7 +26,7 @@ class SmsReceiver : BroadcastReceiver() {
                 for ((sender, parts) in grouped) {
                     val body = parts.joinToString("") { it.messageBody ?: "" }
                     val smsTs = parts.first().timestampMillis
-                    val parsed = SmsParser.parse(body) ?: continue
+                    val parsed = SmsParser.parse(body, sender) ?: continue
                     val tx = Transaction(
                         amount = parsed.amount,
                         type = parsed.type,

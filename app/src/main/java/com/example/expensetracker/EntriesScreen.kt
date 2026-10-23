@@ -35,8 +35,8 @@ fun EntriesScreen(vm: AppViewModel, onEdit: (Transaction) -> Unit) {
                     t.mode.lowercase().contains(q) || t.amount.toString().contains(q))
         }
     }
-    val fIn = filtered.filter { it.type == "CREDIT" }.sumOf { it.amount }
-    val fOut = filtered.filter { it.type == "DEBIT" }.sumOf { it.amount }
+    val fIn = filtered.filter { it.type == "CREDIT" && !isTransfer(it) }.sumOf { it.amount }
+    val fOut = filtered.filter { it.type == "DEBIT" && !isTransfer(it) }.sumOf { it.amount }
 
     LazyColumn(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 100.dp),

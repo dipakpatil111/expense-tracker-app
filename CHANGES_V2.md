@@ -40,3 +40,24 @@ Delete the old project's `app/src/main/java/com/example/expensetracker/` folder 
 The new files use the SAME names as old ones (Transaction.kt, LoanRecord.kt, TransactionDao.kt, LoanDao.kt),
 so nothing stale stays behind. If an old Transaction.kt (without `isDeleted`) is left over, KSP fails with
 "no such column: isDeleted".
+
+## v3 - Opening balance, running balance, month statement, transfer
+- More -> Opening balance: enter Cash in hand + Bank balance (and the date it is valid from).
+- Home: "Total balance now" with Cash in hand and Bank/Online as RUNNING balances (not reset every month).
+  Expense reduces, income adds. Uber/Rapido/Online entries go to bank, CASH entries go to cash.
+- Home: "Balance statement" card for the selected month: Opening + Income - Expense +/- Transfer = Closing (cash, bank, total).
+  Change the month with the arrows; a month's closing is automatically the next month's opening.
+- Home: "Transfer cash / bank" (ATM withdraw / cash deposit). Not counted as income or expense.
+  Tap a transfer in the list to delete it (both halves are removed).
+- Transfers are excluded from income/expense totals, analytics, budgets and the Rapido card.
+- Opening balance is stored on the phone (not in cloud sync / JSON backup).
+
+## v3.1 - SMS fix
+- Promotional senders (ending "-P", e.g. TX-KOTAKB-P) are ignored.
+- "cashback" is no longer treated as credit; bank/card words alone are no longer proof of a transaction.
+- A transaction SMS now needs a masked account/card number (A/c XX1234) or UPI/IMPS/NEFT/Ref words.
+- Files changed: SmsParser.kt, SmsReceiver.kt
+
+## v3.2 - Bank of Baroda "Dr./Cr." SMS
+- "Rs.19.00 Dr. from A/C XXXXXX4523 and Cr. to abc@upi. Ref:..." is now recognised (Dr. = debit, Cr. = credit).
+- Merchant name no longer includes your own account text. File changed: SmsParser.kt

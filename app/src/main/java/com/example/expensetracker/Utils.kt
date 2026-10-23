@@ -120,3 +120,32 @@ fun calcInterest(loan: LoanRecord, payments: List<InterestPayment>, now: Long = 
 /** A debit that belongs to Rapido: recharge, subscription, or anything entered with mode RAPIDO. */
 fun isRapidoCost(t: Transaction): Boolean =
     t.type == "DEBIT" && (t.mode == "RAPIDO" || t.txCategory == RAPIDO_RECHARGE || t.txCategory == RAPIDO_SUB)
+
+/* ---------- cash / bank running balance ---------- */
+
+/** Category used for cash <-> bank transfers. Transfers move money between cash and bank, they are NOT income or expense. */
+const val TRANSFER = "Transfer"
+fun isTransfer(t: Transaction): Boolean = t.txCategory == TRANSFER
+
+data class Opening(val cash: Double, val bank: Double, val date: Long) {
+    val isSet: Boolean get() = date > 0L
+}
+
+data class Bal(val cash: Double, val bank: Double) {
+    val total: Double get() = cash + bank
+}
+
+/**
+ * Balance after all entries with timestamp <= [until]. [txs] must only contain entries from the opening date onwards.
+ * CASH mode entries move the cash balance, every other mode (ONLINE / UBER / RAPIDO) moves the bank balance.
+ */
+fun balanceAt(o: Opening, txs: List<Transaction>, until: Long): Bal {
+    var cash = o.cash
+    var bank = o.bank
+    for (t in txs) {
+        if (t.timestamp > until) continue
+        val d = if (t.type == "CREDIT") t.amount else -t.amount
+        if (t.mode == "CASH") cash += d else bank += d
+    }
+    return Bal(cash, bank)
+}

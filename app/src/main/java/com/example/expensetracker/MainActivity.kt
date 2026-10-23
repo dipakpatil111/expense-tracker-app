@@ -95,6 +95,10 @@ fun MainApp(vm: AppViewModel) {
     var editTx by remember { mutableStateOf<Transaction?>(null) }
     var addLoan by remember { mutableStateOf(false) }
     var pendingSub by remember { mutableStateOf<String?>(null) }
+    var showTransfer by remember { mutableStateOf(false) }
+    var transferDelete by remember { mutableStateOf<Transaction?>(null) }
+    // a transfer row can only be deleted (both halves), a normal row opens the edit dialog
+    val openTx: (Transaction) -> Unit = { tx -> if (isTransfer(tx)) transferDelete = tx else editTx = tx }
 
     BackHandler(enabled = tab != Tab.HOME) { tabIndex = 0 }
 
@@ -139,9 +143,11 @@ fun MainApp(vm: AppViewModel) {
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (tab) {
-                Tab.HOME -> HomeScreen(vm, onSeeAll = { tabIndex = 1 }, onEdit = { editTx = it },
-                    onOpenBudgets = { pendingSub = "BUDGETS"; tabIndex = Tab.MORE.ordinal })
-                Tab.ENTRIES -> EntriesScreen(vm, onEdit = { editTx = it })
+                Tab.HOME -> HomeScreen(vm, onSeeAll = { tabIndex = 1 }, onEdit = openTx,
+                    onOpenBudgets = { pendingSub = "BUDGETS"; tabIndex = Tab.MORE.ordinal },
+                    onOpenBalance = { pendingSub = "BALANCE"; tabIndex = Tab.MORE.ordinal },
+                    onTransfer = { showTransfer = true })
+                Tab.ENTRIES -> EntriesScreen(vm, onEdit = openTx)
                 Tab.STATS -> AnalyticsScreen(vm)
                 Tab.KHATA -> KhataScreen(vm, showAddLoan = addLoan, onAddLoanDismiss = { addLoan = false })
                 Tab.MORE -> SettingsScreen(vm, initialSub = pendingSub, onConsumed = { pendingSub = null })
@@ -150,5 +156,12 @@ fun MainApp(vm: AppViewModel) {
     }
 
     if (addTx) TxDialog(vm, null, onDismiss = { addTx = false })
+    if (showTransfer) TransferDialog(vm) { showTransfer = false }
+    transferDelete?.let { t ->
+        ConfirmDialog(
+            "Delete this transfer?", "Both sides (cash and bank) of the transfer are removed.", "Delete",
+            { vm.deleteTransfer(t); transferDelete = null }, { transferDelete = null }, danger = true
+        )
+    }
     editTx?.let { tx -> TxDialog(vm, tx, onDismiss = { editTx = null }, onDelete = onDelete) }
 }

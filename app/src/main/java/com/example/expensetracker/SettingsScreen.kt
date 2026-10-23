@@ -33,6 +33,7 @@ fun SettingsScreen(vm: AppViewModel, initialSub: String?, onConsumed: () -> Unit
     LaunchedEffect(Unit) { onConsumed() }
     BackHandler(enabled = sub != null) { sub = null }
     when (sub) {
+        "BALANCE" -> BalanceScreen(vm) { sub = null }
         "BUDGETS" -> BudgetsScreen(vm) { sub = null }
         "RECURRING" -> RecurringScreen(vm) { sub = null }
         "CATEGORIES" -> CategoriesScreen(vm) { sub = null }
@@ -117,6 +118,8 @@ private fun SettingsHome(vm: AppViewModel, open: (String) -> Unit) {
         item {
             AppCard {
                 SectionTitle("Plan & organise")
+                SettingRow("Opening balance", "Cash in hand & bank balance – carried forward every month", { open("BALANCE") }) { Text("›", fontSize = 22.sp, color = Th.textMuted) }
+                Hairline()
                 SettingRow("Budgets", "Monthly + per-category limits with alerts", { open("BUDGETS") }) { Text("›", fontSize = 22.sp, color = Th.textMuted) }
                 Hairline()
                 SettingRow("Recurring entries", "Rent, EMI, subscriptions – added automatically", { open("RECURRING") }) { Text("›", fontSize = 22.sp, color = Th.textMuted) }
@@ -378,5 +381,71 @@ private fun CategoriesScreen(vm: AppViewModel, onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/* ------------------------------ opening balance ------------------------------ */
+
+private fun numText(v: Double): String = if (v % 1.0 == 0.0) v.toLong().toString() else v.toString()
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BalanceScreen(vm: AppViewModel, onBack: () -> Unit) {
+    val opening by vm.opening.collectAsState()
+    val context = LocalContext.current
+    var cash by remember { mutableStateOf(if (opening.isSet) numText(opening.cash) else "") }
+    var bank by remember { mutableStateOf(if (opening.isSet) numText(opening.bank) else "") }
+    var date by remember { mutableLongStateOf(if (opening.isSet) opening.date else System.currentTimeMillis()) }
+    var showDate by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LazyColumn(
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubHeader("Opening balance", onBack) }
+        item {
+            AppCard {
+                Text("How much do you have?", fontWeight = FontWeight.Bold, color = Th.text)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Enter your cash in hand and bank balance. From this date every expense reduces it and every income adds to it. " +
+                        "Each month's closing balance automatically becomes the next month's opening balance. " +
+                        "Entries older than this date are not counted in the balance.",
+                    fontSize = 12.sp, color = Th.textMuted
+                )
+                Spacer(Modifier.height(12.dp))
+                AppTextField(cash, { cash = it }, "Cash in hand (₹)", number = true)
+                Spacer(Modifier.height(8.dp))
+                AppTextField(bank, { bank = it }, "Bank / online balance (₹)", number = true)
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Th.surfaceAlt).clickable { showDate = true }.padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("📅  Balance valid from", color = Th.textMuted, fontSize = 13.sp)
+                    Text(fmtDateTime(date), color = Th.text, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                }
+                error?.let { Text(it, color = Th.expense, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp)) }
+                Spacer(Modifier.height(14.dp))
+                PrimaryButton("Save opening balance", {
+                    val c = cash.replace(",", "").ifBlank { "0" }.toDoubleOrNull()
+                    val b = bank.replace(",", "").ifBlank { "0" }.toDoubleOrNull()
+                    if (c == null || b == null) { error = "Enter valid amounts"; return@PrimaryButton }
+                    vm.saveOpening(c, b, date)
+                    Toast.makeText(context, "Opening balance saved", Toast.LENGTH_SHORT).show()
+                    onBack()
+                })
+            }
+        }
+    }
+
+    if (showDate) {
+        val st = rememberDatePickerState(initialSelectedDateMillis = localToUtcDay(date))
+        DatePickerDialog(
+            onDismissRequest = { showDate = false },
+            confirmButton = { TextButton(onClick = { st.selectedDateMillis?.let { date = startOfDay(mergeDate(date, it)) }; showDate = false }) { Text("OK") } },
+            dismissButton = { TextButton(onClick = { showDate = false }) { Text("Cancel") } }
+        ) { DatePicker(state = st) }
     }
 }

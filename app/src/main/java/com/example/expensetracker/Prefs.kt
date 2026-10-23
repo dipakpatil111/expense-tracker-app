@@ -15,6 +15,17 @@ class AppPrefs(context: Context) {
         get() = sp.getFloat("budget_limit", 15000f)
         set(v) { sp.edit().putFloat("budget_limit", v).apply() }
 
+    // opening balance (cash in hand + bank) and the moment it is valid from. openingDate == 0 means "not set".
+    var openingCash: Double
+        get() = sp.getString("opening_cash", "0")?.toDoubleOrNull() ?: 0.0
+        set(v) { sp.edit().putString("opening_cash", v.toString()).apply() }
+    var openingBank: Double
+        get() = sp.getString("opening_bank", "0")?.toDoubleOrNull() ?: 0.0
+        set(v) { sp.edit().putString("opening_bank", v.toString()).apply() }
+    var openingDate: Long
+        get() = sp.getLong("opening_date", 0L)
+        set(v) { sp.edit().putLong("opening_date", v).apply() }
+
     fun categoryBudget(cat: String): Float = sp.getFloat("cat_budget_$cat", 0f)
     fun setCategoryBudget(cat: String, v: Float) {
         if (v <= 0f) sp.edit().remove("cat_budget_$cat").apply() else sp.edit().putFloat("cat_budget_$cat", v).apply()
